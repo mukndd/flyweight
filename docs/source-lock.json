@@ -1,0 +1,44 @@
+{
+  "repository": "https://github.com/philshiu/Drosophila_brain_model",
+  "commit": "91bdd1e7dcf193f3e7ca5a8933497fcef63b7960",
+  "zenodo": "https://zenodo.org/records/10676866",
+  "files": {
+    "Completeness_783.csv": {
+      "url": "https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960/Completeness_783.csv",
+      "bytes": 3327347,
+      "sha256": "bbb847a4cc2caaa7a16349722d220c087317b946d148d4d592d94d250617a311",
+      "downloaded_utc": "2026-09-09T11:13:31.367638+00:00"
+    },
+    "Connectivity_783.parquet": {
+      "url": "https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960/Connectivity_783.parquet",
+      "bytes": 100804642,
+      "sha256": "efeb23fb99098e9c390f6869969b2a121a2ee92c833cfc45ecb2c1d8e1af0347",
+      "downloaded_utc": "2026-09-09T11:13:47.867678+00:00"
+    },
+    "LICENSE": {
+      "url": "https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960/LICENSE",
+      "bytes": 1085,
+      "sha256": "3621f6d6476189190e2960fa43f11b275ba4eca848fdac50a1ba2925de6223e8",
+      "downloaded_utc": "2026-09-09T11:14:22.236970+00:00"
+    },
+    "Readme.md": {
+      "url": "https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/91bdd1e7dcf193f3e7ca5a8933497fcef63b7960/Readme.md",
+      "bytes": 3617,
+      "sha256": "0654ac53f9af85000b50f6a5d2297aade8602c507a44e811f8aff602629c2625",
+      "downloaded_utc": "2026-09-09T11:14:22.959657+00:00"
+    },
+    "annotations_783.tsv": {
+      "url": "https://raw.githubusercontent.com/flyconnectome/flywire_annotations/ebd66db2596fcc39c6950fb54ea3efa00f7fe8a0/supplemental_files/Supplemental_file1_neuron_annotations.tsv",
+      "bytes": 27015208,
+      "sha256": "30be6c73975a70c56d930e27911f36455d3886e15abf383b78edd2a5d679e0b6",
+      "downloaded_utc": "2026-09-09T11:17:30.659082+00:00"
+    }
+  },
+  "zenodo_record": {
+    "url": "https://zenodo.org/api/records/10676866",
+    "bytes": 12732,
+    "sha256": "e9f73286af86b68389a3c7418becbba5d5f83ce14cbc3257c1d62c62ac168ce1",
+    "downloaded_utc": "2026-09-09T11:14:03.456529+00:00"
+  },
+  "annotation_commit": "ebd66db2596fcc39c6950fb54ea3efa00f7fe8a0"
+}

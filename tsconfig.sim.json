@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"noEmit":false,"outDir":"dist/sim","rootDir":"packages","module":"NodeNext","moduleResolution":"NodeNext","declaration":true},"include":["packages/sim/**/*.ts","packages/protocol/**/*.ts"]}
