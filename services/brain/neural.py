@@ -8,7 +8,8 @@ from .limits import MAX_EDGES, MAX_LIF_STEPS, MAX_NEURONS, MAX_SPIKES, PROCESSED
 from .storage import read_json, validate_npz
 
 TOPOLOGIES = ("real", "degree_randomized", "weight_shuffled", "ordinary", "rule", "random")
-OBSERVATIONS = 16
+OBSERVATIONS = 20
+ACTION_COUNT = 14
 
 
 class Graph:
@@ -56,11 +57,15 @@ class Graph:
         return matrix, details
 
     def view(self, topology="real"):
+        if topology in {"rule", "random"}:
+            return {"ids": [], "roles": [], "edges": [], "neurons": 0, "edge_count": 0,
+                    "synthetic": self.manifest["synthetic"], "dataset_hash": self.manifest["graph_hash"],
+                    "input_count": 0, "output_count": 0}
         matrix, _ = self.matrix(topology)
         index = {int(v): i for i, v in enumerate(self.sample)}
         coo = matrix[self.sample][:, self.sample].tocoo()
         order = np.argsort(-np.abs(coo.data), kind="stable")[:600]
-        edges = [[int(coo.col[i]), int(coo.row[i]), 1 if coo.data[i] >= 0 else -1] for i in order]
+        edges = [[int(coo.col[i]), int(coo.row[i]), round(float(coo.data[i]), 7)] for i in order]
         return {"ids": [("synthetic:" + str(self.ids[i])) if self.manifest["synthetic"] else str(self.ids[i]) for i in self.sample],
                 "roles": [1 if i in self.inputs else 2 if i in self.outputs else 0 for i in index],
                 "edges": edges, "neurons": self.n, "edge_count": int(matrix.nnz),
@@ -104,12 +109,16 @@ class Controller:
         self.rng = np.random.default_rng(seed)
         ni, no = len(graph.inputs), len(graph.outputs)
         self.encoder = self.rng.normal(0, .7, (ni, OBSERVATIONS)).astype(np.float32)
-        self.readout = self.rng.normal(0, .6, (8, no)).astype(np.float32)
-        self.bias = np.zeros(8, dtype=np.float32)
+        self.readout = self.rng.normal(0, .6, (ACTION_COUNT, no)).astype(np.float32)
+        self.bias = np.zeros(ACTION_COUNT, dtype=np.float32)
         if arrays is not None:
             self.encoder, self.readout, self.bias = arrays["encoder"].copy(), arrays["readout"].copy(), arrays["bias"].copy()
         self.state = np.zeros(graph.n, dtype=np.float32)
         self.ticks = 0
+        self.last_scores = []
+        self.available = [True] * ACTION_COUNT
+        self.last_inputs = []
+        self.rule = None
 
     def arrays(self):
         return {"encoder": self.encoder, "readout": self.readout, "bias": self.bias}
@@ -122,11 +131,23 @@ class Controller:
         self.ticks += 1
         if self.ticks > 3600:
             raise ValueError("Episode decision cap")
+        self.last_inputs = obs.tolist()
+        grounded, ready, combo = bool(obs[16] > .5), bool(obs[17] > .5), bool(obs[18] >= .99)
+        self.available = [True] * ACTION_COUNT
+        self.available[11] = not grounded and ready
+        self.available[13] = combo and ready
+        for attack in (5, 6, 9, 10, 12):
+            self.available[attack] = ready and (grounded or attack not in (9, 12))
+        self.available[3] = grounded
         if self.topology == "rule":
-            action = 4 if obs[7] and obs[6] < .125 else (6 if obs[8] else 5) if obs[6] < .09 else 2 if obs[0] > 0 else 1
+            action = 4 if obs[7] and obs[6] < .125 else 13 if combo and ready and obs[6] < .12 else (9 if obs[8] and grounded else 11 if not grounded else 5) if ready and obs[6] < .09 else 2 if obs[0] > 0 else 1
+            self.rule = "Incoming attack: block" if action == 4 else "Attack within reach" if action in (5, 9, 11, 13) else "Close the distance"
+            self.last_scores = []
             return action, (time.perf_counter() - start) * 1000
         if self.topology == "random":
-            return int(self.rng.integers(0, 8)), (time.perf_counter() - start) * 1000
+            self.rule = "Seeded uniform choice among available actions"
+            self.last_scores = []
+            return int(self.rng.choice(np.flatnonzero(self.available))), (time.perf_counter() - start) * 1000
         stimulus = self.encoder @ obs
         for _ in range(8):
             drive = self.matrix @ self.state
@@ -137,11 +158,14 @@ class Controller:
         # No observation bypass: readout sees only recurrent output-neuron activity.
         features = self.state[self.graph.outputs]
         logits = self.readout @ (features * 8) + self.bias
-        action = int(np.argmax(logits))
+        self.last_scores = logits.astype(float).tolist()
+        action = int(np.argmax(np.where(self.available, logits, -np.inf)))
         return action, (time.perf_counter() - start) * 1000
 
     def activity(self):
-        return [round(float(abs(v)), 5) for v in self.state[self.graph.sample]]
+        if self.topology in {"rule", "random"}:
+            return []
+        return [round(float(v), 6) for v in self.state[self.graph.sample]]
 
 
 class LIF:

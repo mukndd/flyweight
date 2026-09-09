@@ -16,7 +16,7 @@ def save_candidate(graph, arrays, metadata, root=CHECKPOINTS):
     ident = "candidate_" + uuid.uuid4().hex[:16]
     path = safe_path(root, ident, ".npz")
     np.savez(path, **arrays)
-    entry = {"version": 1, "id": ident, "sha256": digest(path), "graph_hash": graph.manifest["graph_hash"],
+    entry = {"version": 2, "id": ident, "sha256": digest(path), "graph_hash": graph.manifest["graph_hash"],
              "created_ns": time.time_ns(), "seed": metadata["seed"], "generation": metadata["generation"],
              "reward": float(metadata["reward"]), "kind": "candidate", "topology": metadata.get("topology", "real")}
     atomic_json(safe_path(root, ident, ".json"), entry)
@@ -26,12 +26,12 @@ def save_candidate(graph, arrays, metadata, root=CHECKPOINTS):
 def load_candidate(graph, ident, root=CHECKPOINTS):
     meta = read_json(safe_path(root, ident, ".json"))
     expected = {"version", "id", "sha256", "graph_hash", "created_ns", "seed", "generation", "reward", "kind", "topology"}
-    if set(meta) != expected or meta["version"] != 1 or meta["id"] != ident or meta["graph_hash"] != graph.manifest["graph_hash"] or meta["kind"] != "candidate":
+    if set(meta) != expected or meta["version"] != 2 or meta["id"] != ident or meta["graph_hash"] != graph.manifest["graph_hash"] or meta["kind"] != "candidate":
         raise ValueError("Checkpoint metadata mismatch")
     if type(meta["seed"]) is not int or not 0 <= meta["seed"] <= 2**32 - 1 or type(meta["generation"]) is not int or not 0 <= meta["generation"] <= 20 or not isinstance(meta["reward"], (int, float)) or not np.isfinite(meta["reward"]):
         raise ValueError("Checkpoint metadata values")
-    specs = {"encoder": ((len(graph.inputs), 16), "float32"), "readout": ((8, len(graph.outputs)), "float32"),
-             "bias": ((8,), "float32")}
+    specs = {"encoder": ((len(graph.inputs), 20), "float32"), "readout": ((14, len(graph.outputs)), "float32"),
+             "bias": ((14,), "float32")}
     arrays = validate_npz(safe_path(root, ident, ".npz"), specs, meta["sha256"])
     if any(np.max(abs(v)) > 100 for v in arrays.values()):
         raise ValueError("Adapter amplitude limit")
@@ -56,7 +56,7 @@ def list_candidates(graph, root=CHECKPOINTS):
 def promote(graph, ident, evidence, root=CHECKPOINTS):
     _, meta = load_candidate(graph, ident, root)
     # CLI only. Suite gate is applied to freshly recomputed evidence by the trainer command.
-    if evidence.get("suite") != "evaluation-v1" or evidence.get("episodes") != 9 or evidence.get("failures") != 0 or evidence.get("win_rate", 0) < .55 or evidence.get("mean_reward", -999) < evidence.get("previous_reward", 0) + 1:
+    if evidence.get("suite") != "evaluation-v2" or evidence.get("episodes") != 9 or evidence.get("failures") != 0 or evidence.get("win_rate", 0) < .55 or evidence.get("mean_reward", -999) < evidence.get("previous_reward", 0) + 1:
         raise ValueError("Predefined evaluation gate failed")
     pointer = root / "canonical.json"
     previous = read_json(pointer).get("id") if pointer.exists() else None

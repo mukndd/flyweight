@@ -1,8 +1,10 @@
 from pathlib import Path
 
+from .config import SETTINGS
+
 ROOT = Path(__file__).resolve().parents[2]
 RAW = ROOT / "data/raw"
-PROCESSED = ROOT / "data/processed"
+PROCESSED = SETTINGS.data_dir
 CHECKPOINTS = ROOT / "checkpoints"
 MAX_NEURONS = 5000
 MAX_EDGES = 500_000
@@ -24,5 +26,5 @@ MAX_TRAIN_SECONDS = 600
 MAX_LIF_STEPS = 10_000
 MAX_SPIKES = 100_000
 MEMORY_TARGET_BYTES = 2_000_000_000
-ORIGIN = "http://127.0.0.1:5173"
+ORIGIN = SETTINGS.origins[0]
 

@@ -10,9 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .checkpoints import list_candidates, load_candidate
-from .limits import (IDLE_SECONDS, MAX_CONNECTIONS, MAX_MESSAGE_BYTES, MAX_TRAIN_SECONDS,
-                     MESSAGE_RATE, ORIGIN, PROCESSED, ROOT)
-from .neural import Controller, Graph, TOPOLOGIES
+from .config import SETTINGS
+from .limits import (
+    IDLE_SECONDS,
+    MAX_CONNECTIONS,
+    MAX_MESSAGE_BYTES,
+    MAX_TRAIN_SECONDS,
+    MESSAGE_RATE,
+    PROCESSED,
+    ROOT,
+)
+from .neural import TOPOLOGIES, Controller, Graph
 from .protocol import Load, Observation, Reset, Train, parse_message
 from .storage import safe_path
 
@@ -39,6 +47,8 @@ class RateLimiter:
 async def lifespan(_app):
     global graph
     if not (PROCESSED / "flywire.json").exists() and not (PROCESSED / "synthetic.json").exists():
+        if SETTINGS.production:
+            raise ValueError("Production requires a prepared and validated graph")
         from .preprocess import synthetic
         synthetic()
     graph = Graph(synthetic=not (PROCESSED / "flywire.json").exists())
@@ -51,8 +61,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Flyweight local brain", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN], allow_methods=["GET"], allow_headers=[])
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "testserver"])
+app.add_middleware(CORSMiddleware, allow_origins=list(SETTINGS.origins), allow_methods=["GET"], allow_headers=[])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(SETTINGS.allowed_hosts) + ([] if SETTINGS.production else ["testserver"]))
 
 
 @app.middleware("http")
@@ -67,8 +77,8 @@ async def security_headers(request, call_next):
 
 @app.get("/health")
 async def health():
-    return {"v": 1, "type": "health", "status": "ready", "training": training is not None,
-            "neurons": graph.n, "edges": graph.e, "synthetic": graph.manifest["synthetic"]}
+    return {"v": 2, "type": "health", "status": "ready", "training": training is not None,
+            "neurons": graph.n, "edges": graph.e, "synthetic": graph.manifest["synthetic"], "training_enabled": SETTINGS.training_enabled}
 
 
 class TrainingJob:
@@ -107,9 +117,9 @@ class TrainingJob:
                     await self.send(data)
             code = await self.process.wait()
             if code:
-                await self.send({"v": 1, "type": "error", "code": "training_failed"})
+                await self.send({"v": 2, "type": "error", "code": "training_failed"})
         except (OSError, ValueError, TimeoutError, RuntimeError):
-            await self.send({"v": 1, "type": "error", "code": "training_stopped"})
+            await self.send({"v": 2, "type": "error", "code": "training_stopped"})
         finally:
             if self.process and self.process.returncode is None:
                 self.process.terminate()
@@ -120,6 +130,8 @@ class TrainingJob:
                 training = None
 
     async def stop(self):
+        if self.task and self.task.done():
+            return
         self.cancel_path.touch(exist_ok=True)
         if self.process and self.process.returncode is None:
             try:
@@ -132,7 +144,7 @@ class TrainingJob:
 @app.websocket("/ws")
 async def websocket(ws: WebSocket):
     global connections, training
-    if ws.headers.get("origin") != ORIGIN or connections >= MAX_CONNECTIONS:
+    if ws.headers.get("origin") not in SETTINGS.origins or connections >= MAX_CONNECTIONS:
         await ws.close(code=1008)
         return
     connections += 1
@@ -146,12 +158,14 @@ async def websocket(ws: WebSocket):
     limiter = RateLimiter()
     controller = Controller(graph)
     checkpoint = "seed-initialized"
+    checkpoint_hash = ""
     owned_job = None
     last_seq = -1
+    current_seed = 783
 
     async def status():
-        await send({"v": 1, "type": "status", "controller": "approximate recurrent" if controller.topology not in {"rule", "random"} else controller.topology,
-                    "topology": controller.topology, "checkpoint": checkpoint, **graph.view(controller.topology)})
+        await send({"v": 2, "type": "status", "controller": "approximate recurrent" if controller.topology not in {"rule", "random"} else controller.topology,
+                    "topology": controller.topology, "checkpoint": checkpoint, "checkpoint_hash": checkpoint_hash, "training_enabled": SETTINGS.training_enabled, **graph.view(controller.topology)})
     try:
         await status()
         while True:
@@ -171,8 +185,9 @@ async def websocket(ws: WebSocket):
                 await ws.close(code=1008)
                 break
             if isinstance(message, Reset):
+                current_seed = message.seed
                 controller = Controller(graph, message.seed, message.topology)
-                last_seq, checkpoint = -1, "seed-initialized"
+                last_seq, checkpoint, checkpoint_hash = -1, "seed-initialized", ""
                 await status()
             elif isinstance(message, Observation):
                 if message.seq <= last_seq:
@@ -180,30 +195,39 @@ async def websocket(ws: WebSocket):
                     break
                 last_seq = message.seq
                 action, tick_ms = controller.act(message.values)
-                await send({"v": 1, "type": "action", "seq": message.seq, "action": action, "tick_ms": tick_ms})
-                await send({"v": 1, "type": "neural_activity", "seq": message.seq, "values": controller.activity(),
+                await send({"v": 2, "type": "action", "seq": message.seq, "action": action, "tick_ms": tick_ms, "scores": controller.last_scores, "available": controller.available, "inputs": controller.last_inputs, "rule": controller.rule})
+                await send({"v": 2, "type": "neural_activity", "seq": message.seq, "values": controller.activity(),
                             "aggregate": float(abs(controller.state).mean()), "tick_ms": tick_ms})
             elif isinstance(message, Train):
+                if not SETTINGS.training_enabled:
+                    await send({"v": 2, "type": "error", "code": "training_disabled_in_production"})
+                    continue
                 if training is not None:
-                    await send({"v": 1, "type": "error", "code": "training_busy"})
+                    await send({"v": 2, "type": "error", "code": "training_busy"})
                 else:
                     owned_job = TrainingJob(message, send)
                     training = owned_job
                     owned_job.task = asyncio.create_task(owned_job.run())
             elif isinstance(message, Load):
-                arrays, _ = load_candidate(graph, message.id)
-                controller = Controller(graph, 783, controller.topology, arrays)
+                try:
+                    arrays, metadata = load_candidate(graph, message.id)
+                except (ValueError, OSError):
+                    await send({"v": 2, "type": "error", "code": "checkpoint_incompatible"})
+                    await status()
+                    continue
+                controller = Controller(graph, current_seed, controller.topology, arrays)
                 checkpoint = message.id
-                await send({"v": 1, "type": "checkpoint_load", "id": checkpoint})
+                checkpoint_hash = metadata['sha256']
+                await send({"v": 2, "type": "checkpoint_load", "id": checkpoint})
                 await status()
             elif message.type == "health":
-                await send({"v": 1, "type": "health", "status": "ready", "training": training is not None})
+                await send({"v": 2, "type": "health", "status": "ready", "training": training is not None})
             elif message.type == "checkpoint_list":
-                await send({"v": 1, "type": "checkpoint_list", "items": list_candidates(graph)})
+                await send({"v": 2, "type": "checkpoint_list", "items": list_candidates(graph)})
             elif message.type == "train_stop":
                 if owned_job:
                     await owned_job.stop()
-                await send({"v": 1, "type": "health", "status": "training_cancelled", "training": False})
+                await send({"v": 2, "type": "health", "status": "training_cancelled", "training": False})
     except (WebSocketDisconnect, TimeoutError, RuntimeError, ValueError, OSError):
         try:
             await ws.close(code=1008)

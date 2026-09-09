@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from services.brain.neural import Graph, LIF
+from services.brain.neural import LIF, Graph
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

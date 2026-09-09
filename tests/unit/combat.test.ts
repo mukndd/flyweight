@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
-import {createMatch,step,policy,hashState,parseReplay,playReplay,observation,type Replay,type SceneName} from '../../packages/sim/core';
-import type {Action} from '../../packages/protocol';
+import {createMatch,step,policy,hashState,parseReplay,playReplay,observation,type Replay,type SceneName} from '../../packages/sim/v1';
+type Action=0|1|2|3|4|5|6|7;
 describe('shared deterministic combat',()=>{
  it('moves, jumps, lands, blocks and enforces walls',()=>{
   const s=createMatch(783,'boundary');step(s,[1,0]);expect(s.fighters[0].x).toBeGreaterThanOrEqual(36);step(s,[3,0]);expect(s.fighters[0].y).toBeGreaterThan(0);

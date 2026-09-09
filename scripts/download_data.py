@@ -111,10 +111,10 @@ def main():
         lock = {'repository': 'https://github.com/philshiu/Drosophila_brain_model', 'commit': commit,
                 'zenodo': 'https://zenodo.org/records/10676866', 'files': {}}
     base = f"https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/{lock['commit']}/"
-    names = ['LICENSE', 'Readme.md'] if args.reference_only else ['Completeness_783.csv', 'Connectivity_783.parquet']
+    names = ['LICENSE', 'Readme.md'] if args.reference_only else ['Completeness_783.csv', 'Connectivity_783.parquet', 'annotations_783.tsv']
     for name in names:
         prior = lock['files'].get(name, {})
-        entry = download(base + name, name, prior.get('sha256'))
+        entry = download(prior.get('url', base + name), name, prior.get('sha256'))
         lock['files'][name] = entry
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(json.dumps(lock, indent=2))

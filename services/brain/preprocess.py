@@ -10,8 +10,17 @@ import pyarrow.parquet as pq
 from scipy import sparse
 from scipy.sparse.csgraph import dijkstra
 
-from .limits import (MAX_EDGES, MAX_NEURONS, MAX_PROCESSED_BYTES, MAX_RAW_BYTES,
-                     MAX_RAW_NEURONS, MAX_RAW_ROWS, PROCESSED, RAW, ROOT)
+from .limits import (
+    MAX_EDGES,
+    MAX_NEURONS,
+    MAX_PROCESSED_BYTES,
+    MAX_RAW_BYTES,
+    MAX_RAW_NEURONS,
+    MAX_RAW_ROWS,
+    PROCESSED,
+    RAW,
+    ROOT,
+)
 from .storage import atomic_json, digest, graph_fingerprint, read_json
 
 VERSION = 1

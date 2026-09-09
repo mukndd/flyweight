@@ -1,9 +1,11 @@
 """Bounded NumPy CEM; subprocess bridge runs the exact browser combat rules."""
 import argparse
 import json
+import queue
 import shutil
-import subprocess
+import subprocess  # nosec B404 -- bounded fixed authored bridge and read-only local Git; no shell
 import sys
+import threading
 import time
 import uuid
 
@@ -11,7 +13,7 @@ import numpy as np
 
 from .checkpoints import load_candidate, promote, rollback, save_candidate
 from .limits import CHECKPOINTS, MAX_TRAIN_SECONDS, ROOT
-from .neural import Controller, Graph, TOPOLOGIES
+from .neural import TOPOLOGIES, Controller, Graph
 from .storage import digest, read_json, safe_path
 
 EVAL_SEEDS = [10_000_001, 10_000_002, 10_000_003]
@@ -19,7 +21,7 @@ DIFFICULTIES = ["easy", "medium", "hard"]
 
 
 def code_commit():
-    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=3, check=False)  # nosec B603 B607 -- fixed local read-only Git command
+    result = subprocess.run(["git", "-c", "safe.directory=" + str(ROOT), "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=3, check=False)  # nosec B603 B607 -- fixed local read-only Git command
     return result.stdout.strip() or "uncommitted"
 
 
@@ -35,13 +37,26 @@ class Bridge:
                                         stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)  # nosec B603 -- fixed authored local bridge, no client paths
         self.started = time.monotonic()
+        self.responses = queue.Queue(maxsize=1)
+        def read():
+            try:
+                while line := self.process.stdout.readline(32_768):
+                    self.responses.put(line, timeout=5)
+            except (OSError, ValueError, queue.Full):
+                return
+        self.reader = threading.Thread(target=read, daemon=True)
+        self.reader.start()
 
     def request(self, value):
         if self.process.poll() is not None or time.monotonic() - self.started > MAX_TRAIN_SECONDS:
             raise ValueError("Bridge stopped/time limit")
         self.process.stdin.write(json.dumps(value, allow_nan=False) + "\n")
         self.process.stdin.flush()
-        line = self.process.stdout.readline(32_768)
+        try:
+            line = self.responses.get(timeout=5)
+        except queue.Empty as error:
+            self.process.terminate()
+            raise ValueError("Bridge response time limit") from error
         if not line or len(line) >= 32_768:
             raise ValueError("Bridge response limit")
         result = json.loads(line)
@@ -54,6 +69,7 @@ class Bridge:
             self.process.terminate()
         self.process.wait(timeout=5)
         self.process.stdin.close()
+        self.reader.join(timeout=1)
         self.process.stdout.close()
 
 
@@ -84,10 +100,8 @@ def episode(graph, arrays, seed, difficulty, seconds=12, topology="real", ablate
         rival, agent = state["fighters"]
         dealt, received = 100 - rival["hp"], 100 - agent["hp"]
         win = state["winner"] == 1
-        loss = state["winner"] == 0
         # Arena control is scored only when damage was dealt; no per-distance movement reward.
-        arena = (1 - abs(agent["x"] - 500) / 500) * min(dealt / 20, 1)
-        reward = dealt - 1.1 * received + 40 * win - 40 * loss + 1.5 * agent["blocks"] - .08 * idle + arena
+        reward = result["rewards"][1]
         return {"seed": seed, "difficulty": difficulty, "reward": reward, "win": bool(win),
                 "damage_dealt": dealt, "damage_received": received, "blocks": agent["blocks"],
                 "duration": state["frame"] / 60, "reaction_seconds": float(np.mean(reactions)) if reactions else None,
@@ -116,7 +130,7 @@ def evaluate(graph, arrays, seconds=12, topology="real", ablate=None):
                 for difficulty in DIFFICULTIES for seed in EVAL_SEEDS]
     finally:
         bridge.close()
-    return {"suite": "evaluation-v1", **summary(rows), "rows": rows}
+    return {"suite": "evaluation-v2", **summary(rows), "rows": rows}
 
 
 def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, cancelled=lambda: False):
@@ -139,7 +153,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
     std = np.full_like(mean, .4)
     rng = np.random.default_rng(seed)
     started = time.monotonic()
-    metadata = {"format_version": 1, "run": run_id, "seed": seed, "code_commit": code_commit(),
+    metadata = {"format_version": 2, "run": run_id, "seed": seed, "code_commit": code_commit(),
                 "dataset_hash": graph.manifest["graph_hash"], "config": {"generations": generations, "population": population, "seconds": seconds},
                 "training_seeds": [seed + 1000 + i for i in range(generations)], "evaluation_seeds": EVAL_SEEDS,
                 "method": "CEM adapters only; topology and biological strengths frozen", "status": "exploratory"}
@@ -150,7 +164,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
             raw.write(json.dumps(metadata) + "\n")
             for generation in range(1, generations + 1):
                 if cancelled() or time.monotonic() - started > MAX_TRAIN_SECONDS:
-                    emit(json.dumps({"v": 1, "type": "train_progress", "generation": generation-1, "generations": generations,
+                    emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation-1, "generations": generations,
                                      "reward": 0, "win_rate": 0, "checkpoint": checkpoint, "seed": seed, "status": "cancelled"}))
                     return checkpoint
                 candidates = rng.normal(mean, std, (population, len(mean))).astype(np.float32)
@@ -158,7 +172,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                 results = []
                 for member, candidate in enumerate(candidates):
                     if cancelled():
-                        emit(json.dumps({"v": 1, "type": "train_progress", "generation": generation-1, "generations": generations,
+                        emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation-1, "generations": generations,
                                          "reward": 0, "win_rate": 0, "checkpoint": checkpoint, "seed": seed, "status": "cancelled"}))
                         return checkpoint
                     rows = [episode(graph, unpack(candidate), seed + 999 + generation, difficulty, seconds, bridge=bridge)
@@ -172,13 +186,17 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                 std = np.maximum(.04, candidates[elite].std(axis=0))
                 best_arrays = unpack(candidates[int(np.argmax(results))])
                 checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": max(results)})
-                emit(json.dumps({"v": 1, "type": "train_progress", "generation": generation, "generations": generations,
+                emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation, "generations": generations,
                                  "reward": max(results), "win_rate": 0, "checkpoint": checkpoint, "seed": seed, "status": "training"}))
             report = evaluate(graph, best_arrays, seconds)
             raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")), "evaluation": report}) + "\n")
-            emit(json.dumps({"v": 1, "type": "train_progress", "generation": generations, "generations": generations,
+            emit(json.dumps({"v": 2, "type": "train_progress", "generation": generations, "generations": generations,
                              "reward": report["mean_reward"], "win_rate": report["win_rate"], "checkpoint": checkpoint,
                              "seed": seed, "status": "evaluated candidate"}))
+    except (ValueError, OSError, RuntimeError, TimeoutError) as error:
+        with raw_path.open("a", encoding="utf-8") as raw:
+            raw.write(json.dumps({"status": "failed", "failure": type(error).__name__}) + "\n")
+        raise
     finally:
         bridge.close()
     return checkpoint
@@ -207,7 +225,7 @@ def main():
         with path.open("x", encoding="utf-8") as file:
             file.write(json.dumps({"version": 1, "code_commit": code_commit(), "graph_hash": graph.manifest["graph_hash"],
                                    "checkpoint_hash": digest(CHECKPOINTS / (args.checkpoint + ".npz")) if args.checkpoint else "seed-initialized",
-                                   "suite": "evaluation-v1", "seeds": EVAL_SEEDS, "seconds": args.seconds, "status": "exploratory",
+                                   "suite": "evaluation-v2", "seeds": EVAL_SEEDS, "seconds": args.seconds, "status": "exploratory",
                                    "compute": "8 recurrent microsteps; identical adapter shapes for neural controls"}) + "\n")
             for run_seed in [args.seed, args.seed+1, args.seed+2]:
                 adapters = arrays if args.checkpoint else Controller(graph, run_seed).arrays()

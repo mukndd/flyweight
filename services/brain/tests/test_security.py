@@ -21,11 +21,11 @@ def test_path_traversal(tmp_path, name):
 
 
 @pytest.mark.parametrize("raw", [
-    '{"v":2,"type":"health"}', '{"v":true,"type":"health"}', '{"v":1,"type":"execute"}',
-    '{"v":1,"type":"health","path":"../x"}', '{"v":1,"type":"action","action":99}',
-    '{"v":1,"type":"reset","seed":NaN,"topology":"real"}', '{"v":1,"type":"reset","seed":Infinity,"topology":"real"}',
-    '{"v":1,"type":"reset","seed":-1,"topology":"real"}', '{"v":1,"type":"reset","seed":3,"topology":"evil"}',
-    '{"v":1,"type":"checkpoint_load","id":"../x"}', '[]', 'null', '{}', 'x'*8193
+    '{"v":3,"type":"health"}', '{"v":true,"type":"health"}', '{"v":2,"type":"execute"}',
+    '{"v":2,"type":"health","path":"../x"}', '{"v":2,"type":"action","action":99}',
+    '{"v":2,"type":"reset","seed":NaN,"topology":"real"}', '{"v":2,"type":"reset","seed":Infinity,"topology":"real"}',
+    '{"v":2,"type":"reset","seed":-1,"topology":"real"}', '{"v":2,"type":"reset","seed":3,"topology":"evil"}',
+    '{"v":2,"type":"checkpoint_load","id":"../x"}', '[]', 'null', '{}', 'x'*8193
 ])
 def test_protocol_invalid(raw):
     with pytest.raises(ValueError):
@@ -35,10 +35,10 @@ def test_protocol_invalid(raw):
 def test_protocol_observation_fuzz():
     rng = np.random.default_rng(41)
     for _ in range(100):
-        values = rng.uniform(-1, 1, 16).tolist()
-        raw = {"v": 1, "type": "observation", "seq": 0, "values": values}
+        values = rng.uniform(-1, 1, 20).tolist()
+        raw = {"v": 2, "type": "observation", "seq": 0, "values": values}
         assert parse_message(json.dumps(raw)).values == values
-        raw["values"][int(rng.integers(16))] = float(rng.choice([np.nan, np.inf, -np.inf, 2, -2]))
+        raw["values"][int(rng.integers(20))] = float(rng.choice([np.nan, np.inf, -np.inf, 2, -2]))
         with pytest.raises(ValueError):
             parse_message(json.dumps(raw))
 
@@ -107,7 +107,7 @@ def test_checkpoint_isolation_gate_and_rollback(graph, tmp_path):
     assert not (tmp_path / "canonical.json").exists()
     with pytest.raises(ValueError):
         checkpoints.promote(graph, first, {}, tmp_path)
-    evidence = {"suite": "evaluation-v1", "episodes": 9, "failures": 0, "win_rate": 1, "mean_reward": 20, "previous_reward": 0}
+    evidence = {"suite": "evaluation-v2", "episodes": 9, "failures": 0, "win_rate": 1, "mean_reward": 20, "previous_reward": 0}
     checkpoints.promote(graph, first, evidence, tmp_path)
     checkpoints.promote(graph, second, evidence, tmp_path)
     checkpoints.rollback(graph, tmp_path)
@@ -139,8 +139,8 @@ def test_websocket_origin(client):
             pass
 
 
-@pytest.mark.parametrize("raw,code", [("x"*8193, 1009), ('{"v":1,"type":"unknown"}', 1008),
-                                    ('{"v":1,"type":"health","extra":1}', 1008)])
+@pytest.mark.parametrize("raw,code", [("x"*8193, 1009), ('{"v":2,"type":"unknown"}', 1008),
+                                    ('{"v":2,"type":"health","extra":1}', 1008)])
 def test_websocket_invalid_and_oversize(client, raw, code):
     with client.websocket_connect("/ws", headers={"origin": ORIGIN}) as ws:
         assert ws.receive_json()["type"] == "status"
@@ -156,9 +156,9 @@ def test_websocket_rate_and_connection_cap(client, monkeypatch):
     with client.websocket_connect("/ws", headers={"origin": ORIGIN}) as ws:
         ws.receive_json()
         for _ in range(2):
-            ws.send_json({"v": 1, "type": "health"})
+            ws.send_json({"v": 2, "type": "health"})
             assert ws.receive_json()["type"] == "health"
-        ws.send_json({"v": 1, "type": "health"})
+        ws.send_json({"v": 2, "type": "health"})
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
     monkeypatch.setattr(server, "connections", 4)
@@ -171,13 +171,13 @@ def test_websocket_schemas_and_neural_route(client):
     with client.websocket_connect("/ws", headers={"origin": ORIGIN}) as ws:
         status = ws.receive_json()
         assert status["synthetic"] is True
-        ws.send_json({"v": 1, "type": "reset", "seed": 783, "topology": "real"})
+        ws.send_json({"v": 2, "type": "reset", "seed": 783, "topology": "real"})
         assert ws.receive_json()["type"] == "status"
-        ws.send_json({"v": 1, "type": "observation", "seq": 0, "values": [.2]*16})
+        ws.send_json({"v": 2, "type": "observation", "seq": 0, "values": [.2]*20})
         action, activity = ws.receive_json(), ws.receive_json()
-        assert 0 <= action["action"] < 8 and action["seq"] == 0
+        assert 0 <= action["action"] < 14 and action["seq"] == 0
         assert activity["type"] == "neural_activity" and max(activity["values"]) > 0
-        ws.send_json({"v": 1, "type": "observation", "seq": 0, "values": [.2]*16})
+        ws.send_json({"v": 2, "type": "observation", "seq": 0, "values": [.2]*20})
         with pytest.raises(WebSocketDisconnect):
             ws.receive_json()
 

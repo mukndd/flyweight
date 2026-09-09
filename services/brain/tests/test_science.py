@@ -1,11 +1,10 @@
-import csv
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from services.brain.neural import Controller, LIF, control_edges
+from services.brain.neural import LIF, Controller, control_edges
 from services.brain.preprocess import COLUMNS, read_metadata, validate_batch
 
 
@@ -61,16 +60,16 @@ def test_neural_normalization_fuzz_and_no_bypass(graph):
     rng = np.random.default_rng(7)
     c = Controller(graph)
     for _ in range(100):
-        a, ms = c.act(rng.uniform(-1, 1, 16))
-        assert 0 <= a < 8 and ms >= 0 and np.isfinite(c.state).all() and max(abs(c.state)) <= 1
+        a, ms = c.act(rng.uniform(-1, 1, 20))
+        assert 0 <= a < 14 and ms >= 0 and np.isfinite(c.state).all() and max(abs(c.state)) <= 1
     for value in [np.nan, np.inf, -np.inf, 1.01, -1.01]:
         with pytest.raises(ValueError):
-            c.act([value]*16)
+            c.act([value]*20)
     # Remove the network: non-input output neurons can receive no stimulus.
     c = Controller(graph)
     c.matrix = c.matrix * 0
     for _ in range(20):
-        c.act([1.]*16)
+        c.act([1.]*20)
     assert np.all(c.state[graph.outputs] == 0)
     assert np.any(c.state[graph.inputs] != 0)
 
@@ -78,7 +77,7 @@ def test_neural_normalization_fuzz_and_no_bypass(graph):
 def test_recurrent_reset_is_deterministic(graph):
     a, b = Controller(graph, 4), Controller(graph, 4)
     for _ in range(20):
-        assert a.act([.4]*16)[0] == b.act([.4]*16)[0]
+        assert a.act([.4]*20)[0] == b.act([.4]*20)[0]
     assert np.array_equal(a.state, b.state)
 
 

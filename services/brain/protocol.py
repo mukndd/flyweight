@@ -8,7 +8,7 @@ from .limits import MAX_MESSAGE_BYTES
 
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
-    v: Literal[1]
+    v: Literal[2]
 
 
 class Reset(Message):
@@ -20,7 +20,7 @@ class Reset(Message):
 class Observation(Message):
     type: Literal["observation"]
     seq: int = Field(ge=0, le=5400)
-    values: list[Annotated[float, Field(ge=-1, le=1)]] = Field(min_length=16, max_length=16)
+    values: list[Annotated[float, Field(ge=-1, le=1)]] = Field(min_length=20, max_length=20)
 
 
 class Simple(Message):
@@ -49,7 +49,7 @@ def parse_message(raw):
     def reject_constant(_):
         raise ValueError("Non-finite JSON")
     obj = json.loads(raw, parse_constant=reject_constant)
-    if not isinstance(obj, dict) or type(obj.get("v")) is not int or obj["v"] != 1:
+    if not isinstance(obj, dict) or type(obj.get("v")) is not int or obj["v"] != 2:
         raise ValueError("Protocol version")
     return PARSER.validate_python(obj)
 
