@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "code_commit": "uncommitted",
+  "dataset_hash": "55e3467d4114dcfff64433befd03928fa8f30533ce12edb837f38fa28e561831",
+  "graph_file_sha256": "d53c5681e694ab0adc238293e437351a6f3e9cebe7ca9b2e1db98a6eaf96565b",
+  "initialization_seeds": [
+    783,
+    784,
+    785
+  ],
+  "training": {
+    "generations": 2,
+    "population": 4,
+    "episode_seconds": 6
+  },
+  "evaluation_seeds": [
+    10000001,
+    10000002,
+    10000003
+  ],
+  "difficulties": [
+    "easy",
+    "medium",
+    "hard"
+  ],
+  "status": "exploratory",
+  "selection": "all runs retained; no canonical promotion"
+}
