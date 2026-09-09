@@ -115,21 +115,45 @@ lists all of this and can be opened at any time.
 Requirements: Node 22.12+ (Node 24 recommended per `package.json` engines),
 Python 3.11 or 3.12, no GPU/Docker/WSL required.
 
+**Quick start:**
+
 ```bash
 npm install
 python -m venv .venv && .venv/Scripts/activate   # or .venv/bin/activate on macOS/Linux
 pip install -r requirements-dev.txt
 
-# one-time: fetch and preprocess the real FlyWire v783 data (~104 MB total)
-python scripts/download_data.py
-python -m services.brain.preprocess
-
-npm run dev     # starts the frontend (5173) and the brain service (8000)
+npm run setup:brain   # one-time: fetch + verify + preprocess the real FlyWire v783 data (~131 MB)
+npm run dev           # starts the brain service, waits for it to be healthy, then starts the frontend
 ```
 
-If the brain service is not running or not reachable, the frontend stays
-playable using an explicitly labelled offline demo bot — it does not pretend
-the Fly Brain is connected.
+Open the printed local URL. `npm run dev` runs one command and manages both
+processes for you — starts the Python brain service, waits for its
+`/health` check before opening the frontend, streams both logs to one
+terminal, and shuts both down together on Ctrl+C. If it detects a
+compatible brain service already running on port 8000, it reuses it
+instead of starting a second one; if the port is occupied by something
+else, it fails clearly rather than connecting to it.
+
+`npm run dev` requires the **real** connectome data prepared by
+`npm run setup:brain` and will refuse to start (with a clear message)
+rather than silently falling back to a synthetic graph. For UI-only
+development without the real dataset, pass `--synthetic` to both commands
+(`npm run setup:brain -- --synthetic`, `npm run dev -- --synthetic`) — the
+interface always labels this fixture as synthetic, never as the Fly Brain.
+
+If the brain service is genuinely unreachable at runtime (e.g. it crashes
+after startup), the frontend stays playable using an explicitly labelled
+offline demo bot — it does not pretend the Fly Brain is connected.
+
+### Advanced: running the two services separately
+
+```bash
+npm run dev:brain   # brain service only, foreground, console logs
+npm run dev:web     # frontend only (Vite)
+npm run eval:brain -- --seconds 12          # evaluate the current/a checkpoint
+npm run train:brain -- --preset starter     # short CEM training run (see below)
+npm run train:brain -- --preset serious     # long, unattended CEM training run
+```
 
 ### Environment variables
 
@@ -185,10 +209,15 @@ committed to this repository (see `.gitignore`); re-run
   spike-accurate biophysical simulation (a separate, slower leaky
   integrate-and-fire research model exists in `scripts/lif_experiment.py`
   for short validation runs, decoupled from game framerate).
-- Two-generation CEM training against held-out opponents has not yet
-  produced a candidate that beats the canonical baseline (0% held-out win
-  rate as of the last recorded run) — this is reported as a negative
-  result, not hidden.
+- Early two-generation CEM pilots (trivial training budget) reached 0%
+  held-out win rate. A `--preset serious` run (20 generations, population
+  12, all three difficulties, ~3m44s wall clock) reached a **100% held-out
+  win rate** (mean reward 45.0, 9-episode evaluation-v2 suite) and was
+  promoted through the existing evaluation gate — see
+  `docs/RESUME_BASELINE.md` for the full numbers, including an honest
+  open question about the trained policy converging to seed-insensitive
+  behaviour against medium/hard opponents that a future session should
+  investigate before treating this as a settled result.
 - No production deployment exists yet; see `AGENTS.md` for the current
   authorization state and `BUILD_REPORT.md` for what remains before a
   public deployment would be appropriate.

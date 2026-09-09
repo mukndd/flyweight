@@ -108,10 +108,58 @@ packaging and the broader documentation set:
   held-out win rate with no canonical promotion (an honestly-reported
   negative result, not a bug).
 
-## Next best step
+## Next best step (superseded — see below)
 
 Add `.github/workflows/ci.yml` (typecheck + lint + vitest + pytest, no
 deploy step) and minimal `Dockerfile`s for `apps/web` and
 `services/brain` that read the existing env-driven config — this closes
 the deployment-readiness gap without requiring any new application logic,
 and does not itself deploy or publish anything.
+
+*(Done in a subsequent session: `.github/workflows/ci.yml`,
+`apps/web/Dockerfile`, `services/brain/Dockerfile`, `.dockerignore` — not
+build-verified since Docker is not installed on this machine.)*
+
+## Session addendum — Fly Brain online/trainable (2026-09-09, later same day)
+
+Root cause of the "Fly Brain offline" symptom users saw: operational, not a
+code defect — `npm run dev` only ever started the frontend, and this
+report's own earlier README instructions incorrectly implied it started
+the brain service too. Fixed with a proper combined launcher; see
+`docs/RESUME_BASELINE.md` for the full write-up. Summary of what changed
+and was verified in this addendum:
+
+- `npm run dev` now starts both services, waits for real `/health`, and
+  shuts both down together; `dev:web`/`dev:brain`/`setup:brain` added as
+  explicit sub-commands. Verified live via Playwright against the real
+  connectome (`synthetic=false`, 1,536 neurons, 170,489 connections).
+- `services/brain/trainer.py` gained `--preset {starter,serious}`,
+  `--resume`, `--difficulties`, and configurable CEM hyperparameters, all
+  backward-compatible by default (verified: all 61 pre-existing backend
+  tests still pass unchanged, plus 14 new tests in the new
+  `test_trainer.py`, 75/75 total).
+- Established an honest untrained baseline (seed 783, evaluation-v2 suite):
+  0% win rate, mean reward −39.8.
+  A `--preset serious` run (seed 42, 20 generations, population 12, all
+  three difficulties, 3m44s wall clock) reached **100% held-out win rate**,
+  mean reward 45.0 (95% CI [39.8, 50.2]), 0 failures — promoted through the
+  existing, unmodified evaluation gate to `checkpoints/canonical.json`.
+  Verified live in the browser that loading this checkpoint produces
+  genuinely different adapter parameters/action scores than
+  "seed-initialized".
+- Full suite re-verified after all changes: `tsc --noEmit` clean, ESLint
+  clean, Vitest 15/15, Playwright 5/5 (against the real live combined
+  launcher), Pytest 75/75, Ruff clean.
+- Honest open finding, not resolved this session: the trained policy's
+  held-out episodes against medium and hard produced byte-identical final
+  game hashes across all three held-out seeds — looks like a
+  difficulty/seed-insensitive dominant strategy rather than nuanced play.
+  Flagged in `docs/RESUME_BASELINE.md` for a follow-up session.
+
+Not attempted this session (explicitly out of scope per the phase's own
+instructions): gradient-based training, the three-tier
+SIMPLE/NETWORK/RESEARCH visualization, and the full scientific-controls
+comparison harness (real vs. randomized vs. rule topology under one
+methodology) — the `real`/`degree_randomized`/`weight_shuffled`/`ordinary`/
+`rule`/`random` topology switch these would use already exists and was not
+touched.
