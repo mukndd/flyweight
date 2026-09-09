@@ -18,7 +18,7 @@ export type ServerMessage=
  |Activity
  |{v:2;type:'health';status:string;training:boolean}
  |{v:2;type:'error';code:string}
- |{v:2;type:'train_progress';generation:number;generations:number;reward:number;win_rate:number;checkpoint:string;seed:number;status:string}
+ |{v:2;type:'train_progress';generation:number;generations:number;reward:number;win_rate:number;training_win_rate?:number;checkpoint:string;seed:number;status:string;run?:string}
  |{v:2;type:'checkpoint_list';items:{id:string;seed:number;generation:number;reward:number;canonical:boolean}[]}
  |{v:2;type:'checkpoint_load';id:string};
 export function isAction(x:unknown):x is Action{return Number.isInteger(x)&&Number(x)>=0&&Number(x)<ACTION_COUNT;}
