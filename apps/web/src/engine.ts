@@ -6,17 +6,22 @@ export class Engine{
  state:Match=createMatch();mode:Mode='spectate';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
  graph:GraphView|null=null;activity:number[]=[];aggregate=0;brainMs=0;gameMs=0;action:Action=0;scores:number[]=[];available:boolean[]=[];inputs:number[]=[];neuralRule:string|null=null;
  connected=false;ready=false;lastResponse=0;neuralActions=0;activityUpdates=0;checkpoint='seed-initialized';checkpointHash='';datasetHash='unavailable';trainingEnabled=true;requestedCheckpoint='';loadingCheckpoint=false;
+ everOnline=false;connectAttempts=0;
  training:Extract<ServerMessage,{type:'train_progress'}>|null=null;checkpoints:Extract<ServerMessage,{type:'checkpoint_list'}>['items']=[];
  keys=new Set<string>();actions:[Action,Action][]=[];replay:AnyReplay|null=null;lastReplay:AnyReplay|null=null;replayCursor=0;error='';simulationSpeed=1;
  botDecision:Decision={action:0,rule:'waiting',reason:'Waiting for the match to begin',frame:0};humanDecision='No key pressed';history:{frame:number;action:Action}[]=[];sourceSegments:Replay['sourceSegments']=[];
  private ws:WebSocket|null=null;private heartbeat:ReturnType<typeof setInterval>|null=null;private retry:ReturnType<typeof setTimeout>|null=null;private stopped=false;private awaiting=-1;private sentAt=0;private accumulator=0;
  get online(){return this.connected&&this.ready&&performance.now()-this.lastResponse<6500;}
+ // True only while we've never yet reached a healthy connection and are still
+ // within the first few automatic retries — lets the UI say "starting" during
+ // normal boot instead of immediately declaring the Fly Brain offline.
+ get startingUp(){return !this.everOnline&&this.connectAttempts<=3;}
  get actionName(){return ACTIONS[this.action];}
  get isNeural(){return !['rule','random'].includes(this.topology);}
  get rightName(){return this.mode==='replay'?'RECORDED FIGHTER':!this.online?'DEMO BOT':!this.isNeural?'CONTROL BOT':'FLY BRAIN';}
  private clearSignals(){this.activity=[];this.aggregate=0;this.scores=[];this.inputs=[];this.available=[];this.neuralRule=null;}
  connect(){
-  this.stopped=false;
+  this.stopped=false;this.connectAttempts++;
   try{this.ws=new WebSocket(brainSocketUrl(import.meta.env.VITE_BRAIN_URL,location.origin,import.meta.env.DEV));}catch{this.error='Fly Brain address is invalid';return;}
   this.ws.onopen=()=>{this.connected=true;this.send({v:2,type:'reset',seed:this.state.seed,topology:this.topology});};
   this.ws.onmessage=event=>{
@@ -28,7 +33,7 @@ export class Engine{
      if(!Number.isInteger(m.neurons)||m.neurons<0||m.neurons>5000||!Number.isInteger(m.edge_count)||m.edge_count<0||m.edge_count>500000||!Array.isArray(m.ids)||m.ids.length>256||m.roles.length!==m.ids.length||m.edges.length>600||!m.roles.every(x=>Number.isInteger(x)&&x>=0&&x<=2)||!m.ids.every(x=>typeof x==='string'&&x.length<40)||!m.edges.every(e=>e.length===3&&Number.isInteger(e[0])&&Number.isInteger(e[1])&&Number.isFinite(e[2])&&Math.abs(e[2])<=1&&e[0]>=0&&e[1]>=0&&e[0]<m.ids.length&&e[1]<m.ids.length))throw Error('Graph schema');
      if(typeof m.checkpoint_hash!=='string'||m.checkpoint_hash!==''&&!/^[a-f0-9]{64}$/.test(m.checkpoint_hash))throw Error('Checkpoint hash');this.graph=m;this.datasetHash=m.dataset_hash;this.checkpointHash=m.checkpoint_hash;this.checkpoint=m.checkpoint;this.trainingEnabled=m.training_enabled;this.awaiting=-1;this.clearSignals();this.activity=new Array(m.ids.length).fill(0);
      if(this.requestedCheckpoint&&m.checkpoint!==this.requestedCheckpoint){this.ready=false;if(!this.loadingCheckpoint){this.loadingCheckpoint=true;this.send({v:2,type:'checkpoint_load',id:this.requestedCheckpoint});}}
-     else{this.ready=true;this.loadingCheckpoint=false;}
+     else{this.ready=true;this.loadingCheckpoint=false;this.everOnline=true;}
     }else if(m.type==='action'){
      if(!isAction(m.action)||!Number.isFinite(m.tick_ms)||m.scores.length!==0&&m.scores.length!==14||!m.scores.every(v=>Number.isFinite(v)&&Math.abs(v)<1e6)||m.available.length!==14||!m.available.every(v=>typeof v==='boolean')||m.inputs.length!==20||!m.inputs.every(v=>Number.isFinite(v)&&Math.abs(v)<=1)||m.rule!==null&&(typeof m.rule!=='string'||m.rule.length>200))throw Error('Decision schema');
      if(m.seq===this.awaiting){this.action=m.action;this.brainMs=m.tick_ms;this.scores=m.scores;this.available=m.available;this.inputs=m.inputs;this.neuralRule=m.rule;this.awaiting=-1;this.neuralActions++;this.history=[...this.history,{frame:m.seq,action:m.action}].slice(-12);}

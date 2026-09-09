@@ -20,9 +20,16 @@ def log_config():
     logs.mkdir(exist_ok=True)
     handler = RotatingFileHandler(logs / "brain-runtime.log", maxBytes=1_000_000, backupCount=2, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handlers = [handler]
+    # Opt-in only: the combined dev launcher sets this so it can stream readable
+    # logs to its own console. Default behaviour (file-only) is unchanged.
+    if os.environ.get("FLYWEIGHT_CONSOLE_LOG") == "1":
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter("%(message)s"))
+        handlers.append(console)
     for name in ("", "uvicorn", "uvicorn.error", "uvicorn.access"):
         logger = logging.getLogger(name)
-        logger.handlers = [handler]
+        logger.handlers = handlers
         logger.setLevel(logging.INFO)
         logger.propagate = False
 

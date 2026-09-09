@@ -7,7 +7,12 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "node scripts/task.mjs dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "node scripts/task.mjs dev",
+    "dev:brain": "node scripts/dev_brain.mjs",
+    "setup:brain": "node scripts/setup_brain.mjs",
+    "train:brain": "node scripts/py.mjs services.brain.trainer train",
+    "eval:brain": "node scripts/py.mjs services.brain.trainer evaluate",
     "build": "node scripts/task.mjs build",
     "test": "node scripts/task.mjs test",
     "lint": "node scripts/task.mjs lint",
