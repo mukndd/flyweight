@@ -32,6 +32,22 @@ def test_production_configuration():
     assert load_settings({}).host == "127.0.0.1"
 
 
+def test_dev_default_accepts_127_and_localhost_origins():
+    # A browser opened via http://localhost:5173 must not be rejected as an
+    # untrusted origin merely because it didn't use 127.0.0.1 (regression:
+    # this previously caused every WebSocket handshake to 403).
+    origins = load_settings({}).origins
+    assert "http://127.0.0.1:5173" in origins
+    assert "http://localhost:5173" in origins
+
+
+def test_plain_http_loopback_origins_do_not_require_https():
+    s = load_settings({"FLYWEIGHT_PUBLIC_ORIGINS": "http://127.0.0.1:6000,http://localhost:6000"})
+    assert set(s.origins) == {"http://127.0.0.1:6000", "http://localhost:6000"}
+    with pytest.raises(ValueError):
+        load_settings({"FLYWEIGHT_PUBLIC_ORIGINS": "http://example.com:6000"})
+
+
 def test_public_training_disabled(graph, monkeypatch):
     from fastapi.testclient import TestClient
     monkeypatch.setattr(server, "graph", graph)
