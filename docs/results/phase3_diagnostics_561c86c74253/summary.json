@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "suite": "scientific-validation-phase-3-diagnostics",
+  "status": "exploratory",
+  "code_commit": "7ba7d387ee4c133011866cd738e4160733b89ff2",
+  "graph_hash": "55e3467d4114dcfff64433befd03928fa8f30533ce12edb837f38fa28e561831",
+  "scenario_set_version": "scenario-library-v1",
+  "reward_version": "combat-v2-reward-1",
+  "trainer_decision": "KEEP CEM",
+  "promotion_gate_v2": {
+    "version": "promotion-gate-v2",
+    "passed": false,
+    "criteria": {
+      "min_heldout_win_rate": 0.5,
+      "min_improvement_over_baseline": 0.15,
+      "min_damage_differential_improvement": 5,
+      "min_unique_action_traces": 2,
+      "catastrophic_family": "no family with win_rate < 0.20 or damage differential < -45"
+    },
+    "catastrophic_families": [
+      "right_corner"
+    ]
+  },
+  "result_dir": "C:\\dev\\flyweight\\docs\\results\\phase3_diagnostics_561c86c74253"
+}
