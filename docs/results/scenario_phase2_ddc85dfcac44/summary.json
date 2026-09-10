@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "suite": "scientific-validation-phase-2-scenarios",
+  "status": "exploratory",
+  "code_commit": "29ec5f1cc036d4d9bf6b735f764b317c08dfd05a",
+  "graph_hash": "55e3467d4114dcfff64433befd03928fa8f30533ce12edb837f38fa28e561831",
+  "scenario_set_version": "scenario-library-v1",
+  "reward_audit": {
+    "reward_version": "combat-v2-reward-1",
+    "changed": false,
+    "formula": "dealt - 1.1*received + win/loss bonus + 1.5*actual blocks - idle penalty + damage-gated arena control",
+    "block_assessment": "Block is not rewarded by button press. The +1.5 term uses fighter.blocks, which increments only when a block/counter actually resolves a hit. The Light-Block-Block-Block loop is indirectly supported because it periodically deals damage and reduces received damage, not because idle blocking alone earns reward.",
+    "decision": "Leave reward unchanged for this phase; scenario diversity and robust aggregation should test whether the defensive loop generalizes before changing incentives."
+  },
+  "promotion_gate_v2": {
+    "version": "promotion-gate-v2",
+    "passed": false,
+    "criteria": {
+      "min_heldout_win_rate": 0.5,
+      "min_improvement_over_baseline": 0.15,
+      "min_damage_differential_improvement": 5,
+      "min_unique_action_traces": 2,
+      "catastrophic_family": "no family with win_rate < 0.20 or damage differential < -45"
+    },
+    "catastrophic_families": [
+      "airborne",
+      "corner_pressure",
+      "counter_window",
+      "early_attack",
+      "far_distance",
+      "health_disadvantage",
+      "mixed_profile",
+      "passive_probe",
+      "right_corner",
+      "very_close"
+    ]
+  },
+  "result_dir": "C:\\dev\\flyweight\\docs\\results\\scenario_phase2_ddc85dfcac44",
+  "trace_decisions_file": "C:\\dev\\flyweight\\docs\\results\\scenario_phase2_ddc85dfcac44\\trace_decisions.jsonl"
+}
