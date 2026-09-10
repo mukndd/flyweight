@@ -59,7 +59,7 @@ def load_resume_state(run_id, graph, root=CHECKPOINTS):
 
 
 def code_commit():
-    result = subprocess.run(["git", "-c", "safe.directory=" + str(ROOT), "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=3, check=False)  # nosec B603 B607 -- fixed local read-only Git command
+    result = subprocess.run(["git", "-c", "safe.directory=" + ROOT.as_posix(), "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=3, check=False)  # nosec B603 B607 -- fixed local read-only Git command
     return result.stdout.strip() or "uncommitted"
 
 
