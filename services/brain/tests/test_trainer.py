@@ -182,3 +182,18 @@ def test_robust_fitness_penalizes_bad_scenario_family():
          "duration": 6, "final_hash": "d", "scenario_family": "far"},
     ]
     assert trainer.robust_fitness(balanced) > trainer.robust_fitness(lopsided)
+    assert trainer.score_rows(balanced, "mean") == pytest.approx(10)
+    assert trainer.score_rows(balanced, "light_robust") == pytest.approx(10)
+
+
+def test_conditional_action_metrics_detect_state_split():
+    rows = [{"profile": "standard", "scenario_family": "close", "trace": [
+        {"observation": [0, 0, 0, 0, 0, 0, .05, 1, 0, 1, 1, 0, 0, 0, 4 / 13, 1, 1, 1, 0, 0],
+         "selected_action": 4},
+        {"observation": [0, 0, 0, 0, 0, 0, .5, 0, 0, 1, 1, 0, 0, 0, 5 / 13, 1, 1, 1, 0, 0],
+         "selected_action": 2},
+    ]}]
+    conditionals = trainer.action_conditionals(rows)
+    assert conditionals["opponent_attacking"]["yes"] == {"4": 1}
+    assert conditionals["distance"]["far"] == {"2": 1}
+    assert trainer.conditional_action_divergence(conditionals)["opponent_attacking"] > 0

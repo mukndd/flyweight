@@ -15,7 +15,7 @@ import numpy as np
 
 from .checkpoints import load_candidate, promote, rollback, save_candidate
 from .limits import CHECKPOINTS, MAX_TRAIN_SECONDS, ROOT
-from .neural import TOPOLOGIES, Controller, Graph
+from .neural import ACTION_COUNT, TOPOLOGIES, Controller, Graph
 from .scenarios import REWARD_VERSION, SCENARIO_SET_VERSION, scenarios
 from .storage import atomic_json, digest, read_json, safe_path, validate_npz
 
@@ -337,6 +337,51 @@ def observation_action_dependence(rows):
             "channels": channels}
 
 
+def action_conditionals(rows):
+    groups = {"opponent_attacking": {}, "distance": {}, "relative_direction": {}, "health": {},
+              "profile": {}, "family": {}}
+    for row in rows:
+        profile = row.get("profile", "unknown")
+        family = row.get("scenario_family", "unknown")
+        for decision in row.get("trace") or []:
+            obs = decision["observation"]
+            action = decision["selected_action"]
+            labels = {
+                "opponent_attacking": "yes" if obs[7] > .5 else "no",
+                "distance": "close" if obs[6] < .12 else "mid" if obs[6] < .35 else "far",
+                "relative_direction": "right" if obs[0] > .03 else "left" if obs[0] < -.03 else "center",
+                "health": "advantage" if obs[9] - obs[10] > .2 else "disadvantage" if obs[10] - obs[9] > .2 else "even",
+                "profile": profile,
+                "family": family,
+            }
+            for key, label in labels.items():
+                groups[key].setdefault(label, Counter())[action] += 1
+    result = {}
+    for key, values in groups.items():
+        result[key] = {label: {str(action): int(count) for action, count in sorted(counter.items())}
+                       for label, counter in sorted(values.items())}
+    return result
+
+
+def conditional_action_divergence(conditionals):
+    scores = {}
+    for key, labels in conditionals.items():
+        counters = [Counter({int(k): v for k, v in dist.items()}) for dist in labels.values()]
+        if len(counters) < 2:
+            scores[key] = 0.0
+            continue
+        distances = []
+        for i in range(len(counters)):
+            for j in range(i + 1, len(counters)):
+                total_i, total_j = sum(counters[i].values()), sum(counters[j].values())
+                if not total_i or not total_j:
+                    continue
+                actions = set(counters[i]) | set(counters[j])
+                distances.append(.5 * sum(abs(counters[i][a] / total_i - counters[j][a] / total_j) for a in actions))
+        scores[key] = float(np.mean(distances)) if distances else 0.0
+    return scores
+
+
 def run_matrix(graph, arrays, seeds, difficulties, profiles, seconds, topology="real", trace=False, counterfactual="none"):
     if any(d not in DIFFICULTIES for d in difficulties) or any(p not in PROFILES for p in profiles):
         raise ValueError("Invalid evaluation matrix")
@@ -372,6 +417,31 @@ def robust_fitness(rows):
     return float(.55 * rewards.mean() + .25 * np.percentile(rewards, 25) + .20 * family_means.min())
 
 
+def score_rows(rows, objective="robust"):
+    rewards = np.asarray([row["reward"] for row in rows], dtype=float)
+    family_means = np.asarray([value["mean_reward"] for value in group_summary(rows, "scenario_family").values()], dtype=float)
+    if objective == "mean":
+        return float(rewards.mean())
+    if objective == "light_robust":
+        return float(.80 * rewards.mean() + .10 * np.percentile(rewards, 25) + .10 * family_means.min())
+    if objective == "robust":
+        return robust_fitness(rows)
+    raise ValueError("Unknown scenario objective")
+
+
+def curriculum_items(generation, total_generations, mode):
+    train_items = scenarios("train")
+    if mode == "full":
+        return train_items
+    if mode != "staged":
+        raise ValueError("Unknown curriculum")
+    if generation <= max(2, total_generations // 3):
+        return [item for item in train_items if item["difficulty"] == "easy" and item["family"] not in {"health_disadvantage"}]
+    if generation <= max(4, 2 * total_generations // 3):
+        return [item for item in train_items if item["difficulty"] in {"easy", "medium"} and item["family"] not in {"right_corner"}]
+    return train_items
+
+
 def reward_audit():
     return {"reward_version": REWARD_VERSION, "changed": False,
             "formula": "dealt - 1.1*received + win/loss bonus + 1.5*actual blocks - idle penalty + damage-gated arena control",
@@ -392,6 +462,85 @@ def promotion_gate_v2(candidate, baseline):
                          "min_damage_differential_improvement": 5, "min_unique_action_traces": 2,
                          "catastrophic_family": "no family with win_rate < 0.20 or damage differential < -45"},
             "catastrophic_families": catastrophic}
+
+
+def matrix_similarity(rows):
+    if len(rows) < 2:
+        return 1.0
+    values = np.asarray(rows, dtype=float)
+    norms = np.linalg.norm(values, axis=1)
+    sims = []
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            denom = norms[i] * norms[j]
+            sims.append(float(np.dot(values[i], values[j]) / denom) if denom > 1e-12 else 1.0)
+    return float(np.mean(sims)) if sims else 1.0
+
+
+def information_flow_diagnostics(graph, arrays, items, seconds=8, max_decisions=18):
+    bridge = Bridge()
+    records = []
+    encoder_norm = float(np.linalg.norm(arrays["encoder"]))
+    readout_norm = float(np.linalg.norm(arrays["readout"]))
+    bias_norm = float(np.linalg.norm(arrays["bias"]))
+    try:
+        for item in items:
+            controller = Controller(graph, item["seed"], "real", arrays)
+            reset = {"type": "reset", "seed": item["seed"], "difficulty": item["difficulty"], "profile": item["profile"],
+                     "limit": seconds * 60, "scenario": bridge_scenario(item)}
+            result = bridge.request(reset)
+            decisions = 0
+            while result["state"]["winner"] is None and decisions < max_decisions:
+                obs = np.asarray(result["observation"], dtype=np.float32)
+                stimulus = controller.encoder @ obs
+                recurrent = controller.matrix @ controller.state
+                for _ in range(8):
+                    drive = controller.matrix @ controller.state
+                    drive[controller.graph.inputs] += stimulus
+                    controller.state = (.65 * controller.state + .35 * np.tanh(drive)).astype(np.float32)
+                features = controller.state[controller.graph.outputs]
+                neural_logits = controller.readout @ (features * 8)
+                logits = neural_logits + controller.bias
+                available = [True] * ACTION_COUNT
+                grounded, ready, combo = bool(obs[16] > .5), bool(obs[17] > .5), bool(obs[18] >= .99)
+                available[11] = not grounded and ready
+                available[13] = combo and ready
+                for attack in (5, 6, 9, 10, 12):
+                    available[attack] = ready and (grounded or attack not in (9, 12))
+                available[3] = grounded
+                action = int(np.argmax(np.where(available, logits, -np.inf)))
+                saturation = float(np.mean(np.abs(controller.state) > .95))
+                records.append({"scenario_id": item["id"], "family": item["family"], "profile": item["profile"],
+                                "difficulty": item["difficulty"], "frame": result["state"]["frame"],
+                                "observation": obs.astype(float).tolist(), "stimulus_norm": float(np.linalg.norm(stimulus)),
+                                "recurrent_norm": float(np.linalg.norm(recurrent)),
+                                "state_mean_abs": float(np.mean(np.abs(controller.state))),
+                                "state_std": float(np.std(controller.state)), "saturation_fraction": saturation,
+                                "output_norm": float(np.linalg.norm(features)), "output_std": float(np.std(features)),
+                                "neural_logit_std": float(np.std(neural_logits)), "bias_logit_std": float(np.std(controller.bias)),
+                                "logit_std": float(np.std(logits)), "bias_to_neural_norm": float(bias_norm / max(1e-9, np.linalg.norm(neural_logits))),
+                                "selected_action": action})
+                result = bridge.request({"type": "step", "action": action})
+                decisions += 1
+    finally:
+        bridge.close()
+    observations = [record["observation"] for record in records]
+    state_metrics = np.asarray([[record["state_mean_abs"], record["state_std"], record["output_norm"],
+                                 record["output_std"], record["logit_std"]] for record in records], dtype=float)
+    return {"samples": len(records), "encoder_norm": encoder_norm, "readout_norm": readout_norm, "bias_norm": bias_norm,
+            "observation_similarity": matrix_similarity(observations),
+            "state_metric_similarity": matrix_similarity(state_metrics),
+            "stimulus_norm_mean": float(np.mean([r["stimulus_norm"] for r in records])),
+            "stimulus_norm_std": float(np.std([r["stimulus_norm"] for r in records])),
+            "recurrent_norm_mean": float(np.mean([r["recurrent_norm"] for r in records])),
+            "state_mean_abs_mean": float(np.mean([r["state_mean_abs"] for r in records])),
+            "state_std_mean": float(np.mean([r["state_std"] for r in records])),
+            "saturation_fraction_mean": float(np.mean([r["saturation_fraction"] for r in records])),
+            "output_norm_mean": float(np.mean([r["output_norm"] for r in records])),
+            "output_std_mean": float(np.mean([r["output_std"] for r in records])),
+            "logit_std_mean": float(np.mean([r["logit_std"] for r in records])),
+            "bias_to_neural_norm_mean": float(np.mean([r["bias_to_neural_norm"] for r in records])),
+            "unique_actions": len({r["selected_action"] for r in records}), "records": records}
 
 
 def resolve_checkpoint(graph, ident):
@@ -507,10 +656,10 @@ def scenario_evaluation(graph, arrays, meta, split="test", seconds=12, counterfa
     return result
 
 
-def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, emit=print):
-    if type(seed) is not int or not 0 <= seed <= 999_999 or not 1 <= generations <= 6 or not 4 <= population <= 8 or not 6 <= seconds <= 12:
+def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, emit=print,
+                    objective="robust", curriculum="full"):
+    if type(seed) is not int or not 0 <= seed <= 999_999 or not 1 <= generations <= 10 or not 4 <= population <= 12 or not 6 <= seconds <= 12:
         raise ValueError("Scenario pilot bounds")
-    items = scenarios("train")
     controller = Controller(graph, seed)
     shapes = {key: value.shape for key, value in controller.arrays().items()}
     sizes = {key: int(np.prod(value)) for key, value in shapes.items()}
@@ -533,9 +682,11 @@ def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, em
     metadata = {"format_version": 3, "run": run_id, "seed": seed, "code_commit": code_commit(),
                 "graph_hash": graph.manifest["graph_hash"], "scenario_set_version": SCENARIO_SET_VERSION,
                 "reward_version": REWARD_VERSION, "config": {"generations": generations, "population": population,
-                                                             "seconds": seconds, "aggregation": "0.55 mean + 0.25 p25 + 0.20 worst-family"},
-                "scenario_ids": [item["id"] for item in items], "method": "CEM adapters only; topology and biological strengths frozen",
+                                                             "seconds": seconds, "objective": objective,
+                                                             "curriculum": curriculum},
+                "scenario_ids": [item["id"] for item in scenarios("train")], "method": "CEM adapters only; topology and biological strengths frozen",
                 "status": "exploratory-pilot"}
+    diagnostics = []
     bridge = Bridge()
     started = time.monotonic()
     try:
@@ -544,22 +695,29 @@ def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, em
             for generation in range(1, generations + 1):
                 if time.monotonic() - started > MAX_TRAIN_SECONDS:
                     break
+                items = curriculum_items(generation, generations, curriculum)
                 candidates = rng.normal(mean, std, (population, len(mean))).astype(np.float32)
                 candidates[0] = mean
-                scores, rows_by_member = [], []
+                scores, rows_by_member, member_stats = [], [], []
                 for member, candidate in enumerate(candidates):
                     arrays = unpack(candidate)
                     rows = [episode(graph, arrays, item["seed"], item["difficulty"], seconds, bridge=bridge,
                                     profile=item["profile"], scenario=item)
                             for item in items]
                     stats = summary(rows)
-                    score = robust_fitness(rows)
+                    by_family = group_summary(rows, "scenario_family")
+                    score = score_rows(rows, objective)
                     raw.write(json.dumps({"generation": generation, "member": member, "robust_fitness": score,
-                                          "summary": stats, "by_family": group_summary(rows, "scenario_family")}, allow_nan=False) + "\n")
+                                          "summary": stats, "by_family": by_family}, allow_nan=False) + "\n")
                     raw.flush()
                     scores.append(score)
                     rows_by_member.append(rows)
+                    member_stats.append({"member": member, "score": float(score), "mean_reward": stats["mean_reward"],
+                                         "p25_reward": float(np.percentile([row["reward"] for row in rows], 25)),
+                                         "worst_family_reward": min(value["mean_reward"] for value in by_family.values()),
+                                         "win_rate": stats["win_rate"]})
                 elite = np.argsort(scores)[-max(2, population // 3):]
+                old_mean = mean.copy()
                 mean = candidates[elite].mean(axis=0)
                 std = np.maximum(.045, candidates[elite].std(axis=0))
                 best_member = int(np.argmax(scores))
@@ -568,15 +726,27 @@ def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, em
                     best_arrays = unpack(candidates[best_member])
                 checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": best_score})
                 save_resume_state(run_id, graph, mean, std, generation, metadata["config"], root=CHECKPOINTS)
+                generation_record = {"generation": generation, "scenario_count": len(items),
+                                     "scenario_ids": [item["id"] for item in items],
+                                     "fitness_min": float(np.min(scores)), "fitness_p25": float(np.percentile(scores, 25)),
+                                     "fitness_mean": float(np.mean(scores)), "fitness_max": float(np.max(scores)),
+                                     "elite_mean": float(np.mean([scores[i] for i in elite])),
+                                     "sigma_mean": float(np.mean(std)), "sigma_max": float(np.max(std)),
+                                     "parameter_mean_change_norm": float(np.linalg.norm(mean - old_mean)),
+                                     "best_member": best_member, "best_ever_score": best_score,
+                                     "final_generation_best_score": float(scores[best_member]),
+                                     "members": member_stats,
+                                     "best_family_scores": group_summary(rows_by_member[best_member], "scenario_family")}
+                diagnostics.append(generation_record)
                 progress = {"v": 2, "type": "train_progress", "status": "scenario_pilot", "run": run_id,
                             "generation": generation, "generations": generations, "reward": best_score,
                             "win_rate": summary(rows_by_member[best_member])["win_rate"], "checkpoint": checkpoint, "seed": seed}
                 emit(json.dumps(progress, allow_nan=False))
             raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")),
-                                  "best_robust_fitness": best_score}, allow_nan=False) + "\n")
+                                  "best_robust_fitness": best_score, "diagnostics": diagnostics}, allow_nan=False) + "\n")
     finally:
         bridge.close()
-    return checkpoint, run_id, best_score
+    return checkpoint, run_id, best_score, diagnostics
 
 
 def compact_row(row):
@@ -623,6 +793,152 @@ def write_phase2_results(report, trace_sources):
     return suite
 
 
+def ranking_correlation(a, b):
+    if len(a) < 2:
+        return 1.0
+    ra = np.argsort(np.argsort(a))
+    rb = np.argsort(np.argsort(b))
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def fitness_aggregation_audit(graph, seed=1357, population=8, seconds=8):
+    base = Controller(graph, seed)
+    shapes = {key: value.shape for key, value in base.arrays().items()}
+    sizes = {key: int(np.prod(value)) for key, value in shapes.items()}
+
+    def unpack(vector):
+        offset = 0
+        result = {}
+        for key, size in sizes.items():
+            result[key] = vector[offset:offset + size].reshape(shapes[key]).astype(np.float32)
+            offset += size
+        return result
+
+    mean = np.concatenate([value.ravel() for value in base.arrays().values()])
+    rng = np.random.default_rng(seed)
+    candidates = rng.normal(mean, .35, (population, len(mean))).astype(np.float32)
+    candidates[0] = mean
+    items = curriculum_items(1, 5, "staged")
+    rows = []
+    bridge = Bridge()
+    try:
+        for member, candidate in enumerate(candidates):
+            arrays = unpack(candidate)
+            member_rows = [episode(graph, arrays, item["seed"], item["difficulty"], seconds, bridge=bridge,
+                                   profile=item["profile"], scenario=item)
+                           for item in items]
+            scores = {objective: score_rows(member_rows, objective) for objective in ("mean", "light_robust", "robust")}
+            rows.append({"member": member, "summary": summary(member_rows), "scores": scores,
+                         "by_family": group_summary(member_rows, "scenario_family")})
+    finally:
+        bridge.close()
+    vectors = {objective: [row["scores"][objective] for row in rows] for objective in ("mean", "light_robust", "robust")}
+    return {"population": population, "seconds": seconds, "scenario_ids": [item["id"] for item in items],
+            "rank_correlations": {"mean_vs_light_robust": ranking_correlation(vectors["mean"], vectors["light_robust"]),
+                                  "mean_vs_robust": ranking_correlation(vectors["mean"], vectors["robust"]),
+                                  "light_robust_vs_robust": ranking_correlation(vectors["light_robust"], vectors["robust"])},
+            "score_spreads": {objective: {"min": float(np.min(values)), "mean": float(np.mean(values)),
+                                          "max": float(np.max(values)), "std": float(np.std(values))}
+                              for objective, values in vectors.items()},
+            "rows": rows}
+
+
+def enrich_responsiveness(result):
+    conditionals = action_conditionals(result["rows"])
+    result["conditional_actions"] = conditionals
+    result["conditional_action_divergence"] = conditional_action_divergence(conditionals)
+    return result
+
+
+def scenario_phase3_report(graph, checkpoint="canonical", seconds=8):
+    old_arrays, old_meta = resolve_checkpoint(graph, checkpoint)
+    baseline_arrays, baseline_meta = resolve_checkpoint(graph, "seed-initialized")
+    diagnostic_items = scenarios("validation") + scenarios("test")[:6]
+    info_old = information_flow_diagnostics(graph, old_arrays, diagnostic_items, seconds=seconds)
+    info_baseline = information_flow_diagnostics(graph, baseline_arrays, diagnostic_items, seconds=seconds)
+    aggregation = fitness_aggregation_audit(graph, seconds=seconds)
+    configs = [
+        {"name": "mean_full_pop8_gen5", "seed": 3101, "population": 8, "generations": 5,
+         "objective": "mean", "curriculum": "full"},
+        {"name": "light_staged_pop8_gen5", "seed": 3102, "population": 8, "generations": 5,
+         "objective": "light_robust", "curriculum": "staged"},
+    ]
+    experiments = []
+    best = None
+    baseline_test = enrich_responsiveness(scenario_evaluation(graph, baseline_arrays, baseline_meta, "test", seconds))
+    old_test = enrich_responsiveness(scenario_evaluation(graph, old_arrays, old_meta, "test", seconds, counterfactuals=True))
+    for config in configs:
+        checkpoint_id, run_id, best_score, diagnostics = train_scenarios(
+            graph, seed=config["seed"], generations=config["generations"], population=config["population"],
+            seconds=seconds, objective=config["objective"], curriculum=config["curriculum"])
+        arrays, meta = resolve_checkpoint(graph, checkpoint_id)
+        validation = enrich_responsiveness(scenario_evaluation(graph, arrays, meta, "validation", seconds, counterfactuals=True))
+        test = enrich_responsiveness(scenario_evaluation(graph, arrays, meta, "test", seconds, counterfactuals=True))
+        experiment = {"config": config, "checkpoint": checkpoint_id, "run": run_id,
+                      "best_robust_fitness": best_score, "cem_diagnostics": diagnostics,
+                      "validation": compact_eval(validation), "test": compact_eval(test)}
+        experiments.append(experiment)
+        value = validation["summary"]["win_rate"] * 100 + validation["summary"]["average_damage_differential"]
+        if best is None or value > best["selection_score"]:
+            best = {"selection_score": value, "checkpoint": checkpoint_id, "run": run_id,
+                    "validation": validation, "test": test, "config": config}
+    best_arrays, best_meta = resolve_checkpoint(graph, best["checkpoint"])
+    train_eval = enrich_responsiveness(scenario_evaluation(graph, best_arrays, best_meta, "train", seconds))
+    gate = promotion_gate_v2(best["test"], baseline_test)
+    recommendation = "ADD PPO AS SECOND TRAINER"
+    if info_old["stimulus_norm_std"] < 1e-6 or info_old["output_std_mean"] < 1e-6:
+        recommendation = "ARCHITECTURE PROBLEM"
+    elif best["test"]["summary"]["win_rate"] > old_test["summary"]["win_rate"] and best["test"]["summary"]["average_damage_differential"] > old_test["summary"]["average_damage_differential"]:
+        recommendation = "KEEP CEM"
+    elif max(exp["validation"]["summary"]["win_rate"] for exp in experiments) > baseline_test["summary"]["win_rate"]:
+        recommendation = "CEM NEEDS MORE SCALE"
+    report = {"version": 1, "suite": "scientific-validation-phase-3-diagnostics", "status": "exploratory",
+              "code_commit": code_commit(), "graph_hash": graph.manifest["graph_hash"],
+              "scenario_set_version": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+              "information_flow": {"old_checkpoint": {k: v for k, v in info_old.items() if k != "records"},
+                                   "seed_initialized": {k: v for k, v in info_baseline.items() if k != "records"}},
+              "neural_dynamics": {"old_checkpoint": {key: info_old[key] for key in ("state_mean_abs_mean", "state_std_mean", "saturation_fraction_mean", "state_metric_similarity", "recurrent_norm_mean")},
+                                  "seed_initialized": {key: info_baseline[key] for key in ("state_mean_abs_mean", "state_std_mean", "saturation_fraction_mean", "state_metric_similarity", "recurrent_norm_mean")}},
+              "adapter_diagnostics": {"old_checkpoint": {key: info_old[key] for key in ("encoder_norm", "readout_norm", "bias_norm", "bias_to_neural_norm_mean", "logit_std_mean")},
+                                      "seed_initialized": {key: info_baseline[key] for key in ("encoder_norm", "readout_norm", "bias_norm", "bias_to_neural_norm_mean", "logit_std_mean")}},
+              "fitness_aggregation_audit": aggregation,
+              "old_checkpoint_test": compact_eval(old_test), "baseline_test": compact_eval(baseline_test),
+              "bounded_search": experiments, "best_responsive_controller": {"checkpoint": best["checkpoint"],
+                                                                            "run": best["run"],
+                                                                            "config": best["config"],
+                                                                            "train": compact_eval(train_eval),
+                                                                            "validation": compact_eval(best["validation"]),
+                                                                            "test": compact_eval(best["test"])},
+              "promotion_gate_v2": gate, "trainer_decision": recommendation,
+              "trainer_interface_plan": {"common_contract": ["scenario_batch", "frozen graph/controller factory",
+                                                             "adapter checkpoint arrays", "evaluation rows",
+                                                             "promotion gate evidence"],
+                                         "future_trainers": ["CEM over adapter vectors", "PPO over adapter/readout policy parameters",
+                                                             "genetic algorithm over adapter vectors", "MAP-Elites over adapter vectors"],
+                                         "excluded_primary": "NEAT should not be the primary FlyWire trainer because it evolves topology; keep it to artificial-control or adapter-only experiments."}}
+    suite = ROOT / "docs" / "results" / ("phase3_diagnostics_" + uuid.uuid4().hex[:12])
+    suite.mkdir(parents=False, exist_ok=False)
+    report["result_dir"] = str(suite)
+    atomic_json(suite / "report.json", report)
+    atomic_json(suite / "summary.json", {key: report[key] for key in ("version", "suite", "status", "code_commit",
+                                                                       "graph_hash", "scenario_set_version",
+                                                                       "reward_version", "trainer_decision",
+                                                                       "promotion_gate_v2", "result_dir")})
+    atomic_json(suite / "scenario_library.json", {"version": SCENARIO_SET_VERSION, "scenarios": scenarios()})
+    with (suite / "diagnostic_records.jsonl").open("x", encoding="utf-8") as file:
+        for label, info in (("old_checkpoint", info_old), ("seed_initialized", info_baseline)):
+            for record in info["records"]:
+                file.write(json.dumps(record | {"controller": label}, allow_nan=False) + "\n")
+    with (suite / "rows.jsonl").open("x", encoding="utf-8") as file:
+        for label, result in (("old_checkpoint_test", old_test), ("baseline_test", baseline_test),
+                              ("best_train", train_eval), ("best_validation", best["validation"]),
+                              ("best_test", best["test"])):
+            for row in result["rows"]:
+                file.write(json.dumps(compact_row(row) | {"evaluation": label}, allow_nan=False) + "\n")
+    atomic_json(suite / "completion.json", {"status": "complete", "result_dir": str(suite), "created_ns": time.time_ns()})
+    return report
+
+
 def scenario_phase2_report(graph, checkpoint="canonical", seconds=8, pilot=False):
     arrays, meta = resolve_checkpoint(graph, checkpoint)
     baseline_arrays, baseline_meta = resolve_checkpoint(graph, "seed-initialized")
@@ -631,11 +947,12 @@ def scenario_phase2_report(graph, checkpoint="canonical", seconds=8, pilot=False
     pilot_result = None
     pilot_test = None
     if pilot:
-        checkpoint_id, run_id, best_score = train_scenarios(graph, seed=2468, generations=2, population=4, seconds=seconds)
+        checkpoint_id, run_id, best_score, diagnostics = train_scenarios(graph, seed=2468, generations=2, population=4, seconds=seconds)
         pilot_arrays, pilot_meta = resolve_checkpoint(graph, checkpoint_id)
         pilot_validation = scenario_evaluation(graph, pilot_arrays, pilot_meta, "validation", seconds, counterfactuals=True)
         pilot_test = scenario_evaluation(graph, pilot_arrays, pilot_meta, "test", seconds, counterfactuals=True)
         pilot_result = {"checkpoint": checkpoint_id, "run": run_id, "best_robust_fitness": best_score,
+                        "cem_diagnostics": diagnostics,
                         "validation": compact_eval(pilot_validation), "test": compact_eval(pilot_test)}
     gate_subject = pilot_test if pilot_test is not None else old_test
     gate = promotion_gate_v2(gate_subject, baseline_test)
@@ -749,7 +1066,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["train", "evaluate", "promote", "rollback", "controls", "validate", "scenario-phase2"])
+    parser.add_argument("command", choices=["train", "evaluate", "promote", "rollback", "controls", "validate", "scenario-phase2", "phase3"])
     parser.add_argument("--seed", type=int, default=783)
     parser.add_argument("--generations", type=int, default=None)
     parser.add_argument("--population", type=int, default=None)
@@ -833,6 +1150,12 @@ def main():
         except (ValueError, OSError) as error:
             parser.error(str(error))
         print(json.dumps({k: v for k, v in result.items() if k not in {"old_checkpoint_test", "baseline_test", "pilot_training"}}, indent=2))
+    elif args.command == "phase3":
+        try:
+            result = scenario_phase3_report(graph, args.checkpoint or "canonical", seconds=args.seconds)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        print(json.dumps({k: v for k, v in result.items() if k not in {"old_checkpoint_test", "baseline_test", "bounded_search", "best_responsive_controller", "fitness_aggregation_audit"}}, indent=2))
     else:
         result = evaluate(graph, arrays, args.seconds)
         if args.command == "promote":
