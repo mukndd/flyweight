@@ -41,6 +41,8 @@ describe('v2 contextual combat and evidence',()=>{
  it('v2 replay fuzz preserves all actions, metadata and finite bounded states',()=>{
   for(let seed=0;seed<20;seed++){const s=createMatch(seed,'close-combat',600),actions:[Action,Action][]=[];let r=seed+1;while(s.winner===null){r=(Math.imul(r,1664525)+1013904223)>>>0;const pair:[Action,Action]=[(r%14) as Action,((r>>>8)%14) as Action];actions.push(pair);step(s,pair);expect(observation(s,1)).toHaveLength(20);expect(Number.isFinite(roundReward(s,1))).toBe(true);for(const f of s.fighters){expect(f.x>=36&&f.x<=964&&f.y>=0&&f.hp>=0&&f.hp<=100).toBe(true);}}
    const saved=replay(s,actions);expect(hashState(playReplay(parseReplay(JSON.stringify(saved))))).toBe(hashState(s));expect(()=>parseReplay(JSON.stringify({...saved,engine:'future'}))).toThrow();expect(()=>parseReplay(JSON.stringify({...saved,sourceSegments:[{frame:-1,controller:'evil',checkpoint:''}]}))).toThrow();
+   expect(parseReplay(JSON.stringify({...saved,profile:'mobile'}))).toMatchObject({profile:'mobile'});
+   expect(()=>parseReplay(JSON.stringify({...saved,profile:'unknown'}))).toThrow();
   }
  });
  it('production URL defaults to same-origin path and supports HTTPS/WSS',()=>{

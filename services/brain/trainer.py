@@ -16,6 +16,7 @@ import numpy as np
 from .checkpoints import load_candidate, promote, rollback, save_candidate
 from .limits import CHECKPOINTS, MAX_TRAIN_SECONDS, ROOT
 from .neural import TOPOLOGIES, Controller, Graph
+from .scenarios import REWARD_VERSION, SCENARIO_SET_VERSION, scenarios
 from .storage import atomic_json, digest, read_json, safe_path, validate_npz
 
 EVAL_SEEDS = [10_000_001, 10_000_002, 10_000_003]
@@ -175,8 +176,14 @@ def pairwise_trace_similarity(traces):
     return float(np.mean(scores)) if scores else 1.0
 
 
+def bridge_scenario(scenario):
+    if scenario is None:
+        return None
+    return {"id": scenario["id"], "player": scenario["player"], "opponent": scenario["opponent"]}
+
+
 def episode(graph, arrays, seed, difficulty, seconds=12, topology="real", ablate=None, bridge=None,
-            profile="standard", trace=False, counterfactual="none"):
+            profile="standard", trace=False, counterfactual="none", scenario=None):
     own = bridge is None
     bridge = bridge or Bridge()
     controller = Controller(graph, seed, topology, arrays)
@@ -184,7 +191,11 @@ def episode(graph, arrays, seed, difficulty, seconds=12, topology="real", ablate
     start = time.perf_counter()
     neural_ms, idle, reactions, signal_started, trace_rows, actions, invalid_unavailable = [], 0, [], None, [], [], 0
     try:
-        result = bridge.request({"type": "reset", "seed": seed, "difficulty": difficulty, "profile": profile, "limit": seconds * 60})
+        reset = {"type": "reset", "seed": seed, "difficulty": difficulty, "profile": profile, "limit": seconds * 60}
+        payload = bridge_scenario(scenario)
+        if payload is not None:
+            reset["scenario"] = payload
+        result = bridge.request(reset)
         initial_positions = [round(float(f["x"]), 5) for f in result["state"]["fighters"]]
         while result["state"]["winner"] is None:
             raw_obs = list(result["observation"])
@@ -225,7 +236,9 @@ def episode(graph, arrays, seed, difficulty, seconds=12, topology="real", ablate
         win = state["winner"] == 1
         # Arena control is scored only when damage was dealt; no per-distance movement reward.
         reward = result["rewards"][1]
-        return {"seed": seed, "difficulty": difficulty, "profile": profile, "reward": reward, "win": bool(win),
+        return {"seed": seed, "difficulty": difficulty, "profile": profile, "scenario_id": scenario["id"] if scenario else None,
+                "scenario_family": scenario["family"] if scenario else None, "scenario_split": scenario["split"] if scenario else None,
+                "reward": reward, "win": bool(win),
                 "damage_dealt": dealt, "damage_received": received, "blocks": agent["blocks"],
                 "damage_differential": dealt - received, "invalid_unavailable_actions": invalid_unavailable,
                 "duration": state["frame"] / 60, "reaction_seconds": float(np.mean(reactions)) if reactions else None,
@@ -301,6 +314,29 @@ def group_summary(rows, *keys):
     return {key: summary(value) for key, value in sorted(result.items())}
 
 
+def observation_action_dependence(rows):
+    pairs = [(decision["observation"], decision["selected_action"]) for row in rows for decision in (row.get("trace") or [])]
+    if not pairs:
+        return {"samples": 0, "channels": {}}
+    observations = np.asarray([p[0] for p in pairs], dtype=float)
+    actions = np.asarray([p[1] for p in pairs], dtype=float)
+    action_var = float(np.var(actions))
+    channels = {}
+    for index in range(observations.shape[1]):
+        values = observations[:, index]
+        obs_var = float(np.var(values))
+        if obs_var <= 1e-12 or action_var <= 1e-12:
+            corr = 0.0
+        else:
+            corr = float(np.corrcoef(values, actions)[0, 1])
+            if not np.isfinite(corr):
+                corr = 0.0
+        channels[str(index)] = {"abs_correlation": abs(corr), "observation_std": float(np.std(values))}
+    strongest = sorted(channels.items(), key=lambda item: item[1]["abs_correlation"], reverse=True)[:5]
+    return {"samples": len(pairs), "strongest_channels": [{"channel": key, **value} for key, value in strongest],
+            "channels": channels}
+
+
 def run_matrix(graph, arrays, seeds, difficulties, profiles, seconds, topology="real", trace=False, counterfactual="none"):
     if any(d not in DIFFICULTIES for d in difficulties) or any(p not in PROFILES for p in profiles):
         raise ValueError("Invalid evaluation matrix")
@@ -315,6 +351,47 @@ def run_matrix(graph, arrays, seeds, difficulties, profiles, seconds, topology="
     finally:
         bridge.close()
     return rows
+
+
+def run_scenarios(graph, arrays, items, seconds, topology="real", trace=False, counterfactual="none"):
+    bridge = Bridge()
+    rows = []
+    try:
+        for item in items:
+            rows.append(episode(graph, arrays, item["seed"], item["difficulty"], seconds, topology, bridge=bridge,
+                                profile=item["profile"], trace=trace, counterfactual=counterfactual, scenario=item))
+    finally:
+        bridge.close()
+    return rows
+
+
+def robust_fitness(rows):
+    rewards = np.asarray([row["reward"] for row in rows], dtype=float)
+    by_family = group_summary(rows, "scenario_family")
+    family_means = np.asarray([value["mean_reward"] for value in by_family.values()], dtype=float)
+    return float(.55 * rewards.mean() + .25 * np.percentile(rewards, 25) + .20 * family_means.min())
+
+
+def reward_audit():
+    return {"reward_version": REWARD_VERSION, "changed": False,
+            "formula": "dealt - 1.1*received + win/loss bonus + 1.5*actual blocks - idle penalty + damage-gated arena control",
+            "block_assessment": "Block is not rewarded by button press. The +1.5 term uses fighter.blocks, which increments only when a block/counter actually resolves a hit. The Light-Block-Block-Block loop is indirectly supported because it periodically deals damage and reduces received damage, not because idle blocking alone earns reward.",
+            "decision": "Leave reward unchanged for this phase; scenario diversity and robust aggregation should test whether the defensive loop generalizes before changing incentives."}
+
+
+def promotion_gate_v2(candidate, baseline):
+    family = candidate["by_family"]
+    catastrophic = [key for key, value in family.items() if value["win_rate"] < .20 or value["average_damage_differential"] < -45]
+    summary_stats = candidate["summary"]
+    passed = (summary_stats["win_rate"] >= max(.50, baseline["summary"]["win_rate"] + .15)
+              and summary_stats["average_damage_differential"] > baseline["summary"]["average_damage_differential"] + 5
+              and summary_stats["unique_action_traces"] > 1
+              and not catastrophic)
+    return {"version": "promotion-gate-v2", "passed": bool(passed),
+            "criteria": {"min_heldout_win_rate": .50, "min_improvement_over_baseline": .15,
+                         "min_damage_differential_improvement": 5, "min_unique_action_traces": 2,
+                         "catastrophic_family": "no family with win_rate < 0.20 or damage differential < -45"},
+            "catastrophic_families": catastrophic}
 
 
 def resolve_checkpoint(graph, ident):
@@ -407,6 +484,175 @@ def validation_report(graph, checkpoint="canonical", seconds=12, matches=120, tr
                     file.write(json.dumps(decision | {"counterfactual_suite": mode}, allow_nan=False) + "\n")
     atomic_json(suite / "completion.json", {"status": "complete", "result_dir": str(suite), "created_ns": time.time_ns()})
     return compact_report
+
+
+def checkpoint_hash_for(meta):
+    return meta["sha256"] if meta["id"] != "seed-initialized" else "seed-initialized"
+
+
+def scenario_evaluation(graph, arrays, meta, split="test", seconds=12, counterfactuals=False):
+    items = scenarios(split)
+    rows = run_scenarios(graph, arrays, items, seconds, trace=True)
+    result = {"controller": meta["id"], "checkpoint_hash": checkpoint_hash_for(meta), "split": split,
+              "summary": summary(rows), "by_family": group_summary(rows, "scenario_family"),
+              "by_scenario": group_summary(rows, "scenario_id"),
+              "observation_action_dependence": observation_action_dependence(rows), "rows": rows}
+    if counterfactuals:
+        result["counterfactuals"] = {}
+        for mode in [m for m in COUNTERFACTUALS if m != "none"]:
+            cf_rows = run_scenarios(graph, arrays, items[:9], seconds, trace=True, counterfactual=mode)
+            result["counterfactuals"][mode] = {"summary": summary(cf_rows),
+                                               "observation_action_dependence": observation_action_dependence(cf_rows),
+                                               "rows": cf_rows}
+    return result
+
+
+def train_scenarios(graph, seed=2468, generations=2, population=4, seconds=8, emit=print):
+    if type(seed) is not int or not 0 <= seed <= 999_999 or not 1 <= generations <= 6 or not 4 <= population <= 8 or not 6 <= seconds <= 12:
+        raise ValueError("Scenario pilot bounds")
+    items = scenarios("train")
+    controller = Controller(graph, seed)
+    shapes = {key: value.shape for key, value in controller.arrays().items()}
+    sizes = {key: int(np.prod(value)) for key, value in shapes.items()}
+
+    def unpack(vector):
+        offset = 0
+        result = {}
+        for key, size in sizes.items():
+            result[key] = vector[offset:offset + size].reshape(shapes[key]).astype(np.float32)
+            offset += size
+        return result
+
+    run_id = "scenario_" + uuid.uuid4().hex[:12]
+    mean = np.concatenate([value.ravel() for value in controller.arrays().values()])
+    std = np.full_like(mean, .35)
+    rng = np.random.default_rng(seed)
+    raw_path = CHECKPOINTS / ("run_" + run_id + ".jsonl")
+    CHECKPOINTS.mkdir(parents=True, exist_ok=True)
+    best_score, best_arrays, checkpoint = -math.inf, controller.arrays(), ""
+    metadata = {"format_version": 3, "run": run_id, "seed": seed, "code_commit": code_commit(),
+                "graph_hash": graph.manifest["graph_hash"], "scenario_set_version": SCENARIO_SET_VERSION,
+                "reward_version": REWARD_VERSION, "config": {"generations": generations, "population": population,
+                                                             "seconds": seconds, "aggregation": "0.55 mean + 0.25 p25 + 0.20 worst-family"},
+                "scenario_ids": [item["id"] for item in items], "method": "CEM adapters only; topology and biological strengths frozen",
+                "status": "exploratory-pilot"}
+    bridge = Bridge()
+    started = time.monotonic()
+    try:
+        with raw_path.open("x", encoding="utf-8") as raw:
+            raw.write(json.dumps(metadata, allow_nan=False) + "\n")
+            for generation in range(1, generations + 1):
+                if time.monotonic() - started > MAX_TRAIN_SECONDS:
+                    break
+                candidates = rng.normal(mean, std, (population, len(mean))).astype(np.float32)
+                candidates[0] = mean
+                scores, rows_by_member = [], []
+                for member, candidate in enumerate(candidates):
+                    arrays = unpack(candidate)
+                    rows = [episode(graph, arrays, item["seed"], item["difficulty"], seconds, bridge=bridge,
+                                    profile=item["profile"], scenario=item)
+                            for item in items]
+                    stats = summary(rows)
+                    score = robust_fitness(rows)
+                    raw.write(json.dumps({"generation": generation, "member": member, "robust_fitness": score,
+                                          "summary": stats, "by_family": group_summary(rows, "scenario_family")}, allow_nan=False) + "\n")
+                    raw.flush()
+                    scores.append(score)
+                    rows_by_member.append(rows)
+                elite = np.argsort(scores)[-max(2, population // 3):]
+                mean = candidates[elite].mean(axis=0)
+                std = np.maximum(.045, candidates[elite].std(axis=0))
+                best_member = int(np.argmax(scores))
+                if scores[best_member] > best_score:
+                    best_score = float(scores[best_member])
+                    best_arrays = unpack(candidates[best_member])
+                checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": best_score})
+                save_resume_state(run_id, graph, mean, std, generation, metadata["config"], root=CHECKPOINTS)
+                progress = {"v": 2, "type": "train_progress", "status": "scenario_pilot", "run": run_id,
+                            "generation": generation, "generations": generations, "reward": best_score,
+                            "win_rate": summary(rows_by_member[best_member])["win_rate"], "checkpoint": checkpoint, "seed": seed}
+                emit(json.dumps(progress, allow_nan=False))
+            raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")),
+                                  "best_robust_fitness": best_score}, allow_nan=False) + "\n")
+    finally:
+        bridge.close()
+    return checkpoint, run_id, best_score
+
+
+def compact_row(row):
+    return {key: value for key, value in row.items() if key != "trace"}
+
+
+def compact_eval(result):
+    compact = {key: value for key, value in result.items() if key not in {"rows", "counterfactuals"}}
+    compact["rows"] = [compact_row(row) for row in result["rows"]]
+    if "counterfactuals" in result:
+        compact["counterfactuals"] = {mode: {key: value for key, value in cf.items() if key != "rows"} | {"rows": [compact_row(row) for row in cf["rows"]]}
+                                      for mode, cf in result["counterfactuals"].items()}
+    return compact
+
+
+def write_phase2_results(report, trace_sources):
+    suite = ROOT / "docs" / "results" / ("scenario_phase2_" + uuid.uuid4().hex[:12])
+    suite.mkdir(parents=False, exist_ok=False)
+    report["result_dir"] = str(suite)
+    report["trace_decisions_file"] = str(suite / "trace_decisions.jsonl")
+    atomic_json(suite / "report.json", report)
+    atomic_json(suite / "scenario_library.json", {"version": SCENARIO_SET_VERSION, "scenarios": scenarios()})
+    atomic_json(suite / "summary.json", {key: report[key] for key in ("version", "suite", "status", "code_commit",
+                                                                       "graph_hash", "scenario_set_version",
+                                                                       "reward_audit", "promotion_gate_v2",
+                                                                       "result_dir", "trace_decisions_file")})
+    with (suite / "rows.jsonl").open("x", encoding="utf-8") as file:
+        for label, result in trace_sources:
+            for row in result["rows"]:
+                file.write(json.dumps(compact_row(row) | {"evaluation": label}, allow_nan=False) + "\n")
+    with (suite / "trace_decisions.jsonl").open("x", encoding="utf-8") as file:
+        for label, result in trace_sources:
+            for row in result["rows"]:
+                for decision in row.get("trace") or []:
+                    file.write(json.dumps(decision | {"evaluation": label, "scenario_id": row["scenario_id"],
+                                                      "scenario_family": row["scenario_family"]}, allow_nan=False) + "\n")
+            for mode, cf in result.get("counterfactuals", {}).items():
+                for row in cf["rows"]:
+                    for decision in row.get("trace") or []:
+                        file.write(json.dumps(decision | {"evaluation": label, "counterfactual_suite": mode,
+                                                          "scenario_id": row["scenario_id"],
+                                                          "scenario_family": row["scenario_family"]}, allow_nan=False) + "\n")
+    atomic_json(suite / "completion.json", {"status": "complete", "result_dir": str(suite), "created_ns": time.time_ns()})
+    return suite
+
+
+def scenario_phase2_report(graph, checkpoint="canonical", seconds=8, pilot=False):
+    arrays, meta = resolve_checkpoint(graph, checkpoint)
+    baseline_arrays, baseline_meta = resolve_checkpoint(graph, "seed-initialized")
+    old_test = scenario_evaluation(graph, arrays, meta, "test", seconds, counterfactuals=True)
+    baseline_test = scenario_evaluation(graph, baseline_arrays, baseline_meta, "test", seconds, counterfactuals=False)
+    pilot_result = None
+    pilot_test = None
+    if pilot:
+        checkpoint_id, run_id, best_score = train_scenarios(graph, seed=2468, generations=2, population=4, seconds=seconds)
+        pilot_arrays, pilot_meta = resolve_checkpoint(graph, checkpoint_id)
+        pilot_validation = scenario_evaluation(graph, pilot_arrays, pilot_meta, "validation", seconds, counterfactuals=True)
+        pilot_test = scenario_evaluation(graph, pilot_arrays, pilot_meta, "test", seconds, counterfactuals=True)
+        pilot_result = {"checkpoint": checkpoint_id, "run": run_id, "best_robust_fitness": best_score,
+                        "validation": compact_eval(pilot_validation), "test": compact_eval(pilot_test)}
+    gate_subject = pilot_test if pilot_test is not None else old_test
+    gate = promotion_gate_v2(gate_subject, baseline_test)
+    report = {"version": 1, "suite": "scientific-validation-phase-2-scenarios", "status": "exploratory",
+              "code_commit": code_commit(), "graph_hash": graph.manifest["graph_hash"],
+              "scenario_set_version": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+              "scenario_counts": {split: len(scenarios(split)) for split in ("train", "validation", "test")},
+              "scenario_families": sorted({item["family"] for item in scenarios()}),
+              "old_checkpoint_test": compact_eval(old_test), "baseline_test": compact_eval(baseline_test),
+              "reward_audit": reward_audit(), "pilot_training": pilot_result,
+              "promotion_gate_v2": gate}
+    trace_sources = [("old_checkpoint_test", old_test), ("baseline_test", baseline_test)]
+    if pilot_test is not None:
+        trace_sources.append(("pilot_test", pilot_test))
+    suite = write_phase2_results(report, trace_sources)
+    report["result_dir"] = str(suite)
+    return report
 
 
 def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, cancelled=lambda: False,
@@ -503,7 +749,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["train", "evaluate", "promote", "rollback", "controls", "validate"])
+    parser.add_argument("command", choices=["train", "evaluate", "promote", "rollback", "controls", "validate", "scenario-phase2"])
     parser.add_argument("--seed", type=int, default=783)
     parser.add_argument("--generations", type=int, default=None)
     parser.add_argument("--population", type=int, default=None)
@@ -519,6 +765,7 @@ def main():
     parser.add_argument("--resume", help="Training run id to continue (see the 'run' field in train_progress output / run_<id>.jsonl). Fails clearly if the saved search state doesn't match this connectome graph.")
     parser.add_argument("--matches", type=int, default=120, help="Validation-only total standard-profile matches; explicit research command only.")
     parser.add_argument("--trace-limit", type=int, default=24, dest="trace_limit", help="Validation-only trace sample count per difficulty.")
+    parser.add_argument("--pilot", action="store_true", help="Scenario Phase 2 only: run the small CEM pilot after baseline evaluation.")
     args = parser.parse_args()
     train_only = ("generations", "population", "difficulties", "elite_fraction", "sigma_init", "sigma_floor", "checkpoint_every", "preset", "resume")
     if args.command != "train" and any(getattr(args, name) is not None for name in train_only):
@@ -541,6 +788,8 @@ def main():
         checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else 1
     if args.command != "validate" and (args.matches != 120 or args.trace_limit != 24):
         parser.error("--matches/--trace-limit only apply to the validate command")
+    if args.command != "scenario-phase2" and args.pilot:
+        parser.error("--pilot only applies to scenario-phase2")
     if not 6 <= seconds <= 30 or not 0 <= args.seed <= 999_999:
         parser.error("Bounded seconds/seed required")
     graph = Graph(synthetic=not (ROOT / "data/processed/flywire.json").exists())
@@ -578,6 +827,12 @@ def main():
         except (ValueError, OSError) as error:
             parser.error(str(error))
         print(json.dumps({k: v for k, v in result.items() if k not in {"reproduction", "trained_standard", "seed_initialized_standard", "trace_analysis", "generalization", "counterfactuals"}}, indent=2))
+    elif args.command == "scenario-phase2":
+        try:
+            result = scenario_phase2_report(graph, args.checkpoint or "canonical", seconds=args.seconds, pilot=args.pilot)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        print(json.dumps({k: v for k, v in result.items() if k not in {"old_checkpoint_test", "baseline_test", "pilot_training"}}, indent=2))
     else:
         result = evaluate(graph, arrays, args.seconds)
         if args.command == "promote":

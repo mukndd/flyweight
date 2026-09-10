@@ -5,6 +5,7 @@ import pytest
 
 from services.brain import checkpoints, trainer
 from services.brain.neural import Controller
+from services.brain.scenarios import scenarios
 
 
 def stub_episode(*, win, reward):
@@ -153,3 +154,31 @@ def test_summary_reports_action_diversity_and_wilson_interval():
     assert result["action_distribution"] == {"1": 3, "4": 1, "5": 2}
     assert 0 <= result["win_rate_ci95_wilson"][0] <= result["win_rate_ci95_wilson"][1] <= 1
     assert result["invalid_unavailable_actions"] == 1
+
+
+def test_scenario_library_has_disjoint_balanced_splits():
+    all_items = scenarios()
+    ids = [item["id"] for item in all_items]
+    assert len(ids) == len(set(ids))
+    assert {item["split"] for item in all_items} == {"train", "validation", "test"}
+    assert len(scenarios("train")) == 18
+    assert len(scenarios("validation")) == 9
+    assert len(scenarios("test")) == 18
+    assert set(item["id"] for item in scenarios("train")).isdisjoint(item["id"] for item in scenarios("test"))
+    assert {"very_close", "far_distance", "corner_pressure", "early_attack"} <= {item["family"] for item in all_items}
+
+
+def test_robust_fitness_penalizes_bad_scenario_family():
+    balanced = [
+        {"reward": 10, "win": True, "failure": None, "damage_dealt": 20, "damage_received": 5,
+         "duration": 6, "final_hash": "a", "scenario_family": "close"},
+        {"reward": 10, "win": True, "failure": None, "damage_dealt": 20, "damage_received": 5,
+         "duration": 6, "final_hash": "b", "scenario_family": "far"},
+    ]
+    lopsided = [
+        {"reward": 35, "win": True, "failure": None, "damage_dealt": 40, "damage_received": 0,
+         "duration": 6, "final_hash": "c", "scenario_family": "close"},
+        {"reward": -20, "win": False, "failure": None, "damage_dealt": 0, "damage_received": 30,
+         "duration": 6, "final_hash": "d", "scenario_family": "far"},
+    ]
+    assert trainer.robust_fitness(balanced) > trainer.robust_fitness(lopsided)
