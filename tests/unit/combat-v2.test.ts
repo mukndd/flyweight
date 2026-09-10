@@ -30,6 +30,14 @@ describe('v2 contextual combat and evidence',()=>{
   s.fighters[0].combo=2;expect(decideBot(s,0,'medium').action).toBe(13);
   expect(decideBot(s,0,'hard')).toEqual(decideBot(s,0,'hard'));
  });
+ it('opponent profiles are explicit deterministic strategy variants',()=>{
+  const s=createMatch(12,'standard');s.fighters[0].x=410;s.fighters[1].x=505;s.fighters[1].cooldown=18;
+  expect(decideBot(s,0,'medium','standard').rule).toBe('close-distance');
+  expect(decideBot(s,0,'medium','aggressive').rule).toBe('profile-aggressive-attack');
+  expect(decideBot(s,0,'medium','counter-focused').rule).toBe('profile-counter-punish');
+  const first=decideBot(s,0,'hard','mixed');
+  expect(first).toEqual(decideBot(s,0,'hard','mixed'));
+ });
  it('v2 replay fuzz preserves all actions, metadata and finite bounded states',()=>{
   for(let seed=0;seed<20;seed++){const s=createMatch(seed,'close-combat',600),actions:[Action,Action][]=[];let r=seed+1;while(s.winner===null){r=(Math.imul(r,1664525)+1013904223)>>>0;const pair:[Action,Action]=[(r%14) as Action,((r>>>8)%14) as Action];actions.push(pair);step(s,pair);expect(observation(s,1)).toHaveLength(20);expect(Number.isFinite(roundReward(s,1))).toBe(true);for(const f of s.fighters){expect(f.x>=36&&f.x<=964&&f.y>=0&&f.hp>=0&&f.hp<=100).toBe(true);}}
    const saved=replay(s,actions);expect(hashState(playReplay(parseReplay(JSON.stringify(saved))))).toBe(hashState(s));expect(()=>parseReplay(JSON.stringify({...saved,engine:'future'}))).toThrow();expect(()=>parseReplay(JSON.stringify({...saved,sourceSegments:[{frame:-1,controller:'evil',checkpoint:''}]}))).toThrow();

@@ -120,3 +120,36 @@ def test_presets_are_within_existing_bounds():
 def test_train_still_returns_plain_checkpoint_string_when_cancelled(graph, tmp_path, monkeypatch):
     isolate(monkeypatch, tmp_path)
     assert trainer.train(graph, generations=1, population=4, seconds=6, emit=lambda _: None, cancelled=lambda: True) == ""
+
+
+def test_counterfactual_transforms_are_bounded_and_targeted():
+    obs = [0.1] * 20
+    obs[7] = 1
+    obs[6] = .4
+    assert trainer.apply_counterfactual(obs, "zero_attack")[7] == 0
+    removed = trainer.apply_counterfactual(obs, "remove_distance")
+    assert removed[0] == removed[1] == removed[6] == 0
+    inverted = trainer.apply_counterfactual(obs, "invert_direction")
+    assert inverted[0] == pytest.approx(-.1)
+    noisy = trainer.apply_counterfactual(obs, "bounded_noise", np.random.default_rng(1))
+    assert len(noisy) == 20
+    assert all(-1 <= value <= 1 for value in noisy)
+
+
+def test_summary_reports_action_diversity_and_wilson_interval():
+    rows = [
+        {"reward": 1, "win": True, "failure": None, "damage_dealt": 20, "damage_received": 5,
+         "duration": 6, "final_hash": "a", "action_trace": [1, 1, 5], "action_trace_hash": "x",
+         "invalid_unavailable_actions": 0},
+        {"reward": -1, "win": False, "failure": None, "damage_dealt": 7, "damage_received": 10,
+         "duration": 8, "final_hash": "b", "action_trace": [1, 4, 5], "action_trace_hash": "y",
+         "invalid_unavailable_actions": 1},
+    ]
+    result = trainer.summary(rows)
+    assert result["wins"] == 1
+    assert result["losses"] == 1
+    assert result["unique_final_hashes"] == 2
+    assert result["unique_action_traces"] == 2
+    assert result["action_distribution"] == {"1": 3, "4": 1, "5": 2}
+    assert 0 <= result["win_rate_ci95_wilson"][0] <= result["win_rate_ci95_wilson"][1] <= 1
+    assert result["invalid_unavailable_actions"] == 1

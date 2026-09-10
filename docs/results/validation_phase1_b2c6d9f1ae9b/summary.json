@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "suite": "scientific-validation-phase-1",
+  "status": "exploratory",
+  "code_commit": "uncommitted",
+  "graph_hash": "55e3467d4114dcfff64433befd03928fa8f30533ce12edb837f38fa28e561831",
+  "checkpoint": "candidate_78931b4895b24b48",
+  "checkpoint_hash": "b6408220972aa4bb091012dd0ae5bbe40dd0567cb7f206dfdb8db2b1c15f4abd",
+  "seconds": 12,
+  "evaluation_config": {
+    "matches_requested": 120,
+    "standard_matches_per_difficulty": 40,
+    "standard_seeds": [
+      20000000,
+      20000001,
+      20000002,
+      20000003,
+      20000004,
+      20000005,
+      20000006,
+      20000007,
+      20000008,
+      20000009,
+      20000010,
+      20000011,
+      20000012,
+      20000013,
+      20000014,
+      20000015,
+      20000016,
+      20000017,
+      20000018,
+      20000019,
+      20000020,
+      20000021,
+      20000022,
+      20000023,
+      20000024,
+      20000025,
+      20000026,
+      20000027,
+      20000028,
+      20000029,
+      20000030,
+      20000031,
+      20000032,
+      20000033,
+      20000034,
+      20000035,
+      20000036,
+      20000037,
+      20000038,
+      20000039
+    ],
+    "trace_seeds": [
+      30000000,
+      30000001,
+      30000002,
+      30000003,
+      30000004,
+      30000005,
+      30000006,
+      30000007,
+      30000008,
+      30000009,
+      30000010,
+      30000011
+    ],
+    "profile_seeds": [
+      40000000,
+      40000001,
+      40000002,
+      40000003,
+      40000004,
+      40000005,
+      40000006,
+      40000007,
+      40000008,
+      40000009
+    ],
+    "counterfactual_seeds": [
+      50000000,
+      50000001,
+      50000002,
+      50000003,
+      50000004,
+      50000005,
+      50000006,
+      50000007
+    ],
+    "difficulties": [
+      "easy",
+      "medium",
+      "hard"
+    ],
+    "profiles": [
+      "standard",
+      "aggressive",
+      "defensive",
+      "counter-focused",
+      "mobile",
+      "mixed"
+    ],
+    "counterfactuals": [
+      "none",
+      "zero_attack",
+      "zero_relative_velocity",
+      "remove_distance",
+      "invert_direction",
+      "bounded_noise"
+    ]
+  },
+  "seed_effect": {
+    "standard_initial_positions_by_seed": {
+      "10000001": [
+        311.0,
+        689.0
+      ],
+      "10000002": [
+        311.0,
+        689.0
+      ],
+      "10000003": [
+        311.0,
+        689.0
+      ]
+    },
+    "initial_position_unique_count": 1,
+    "medium_hard_unique_hashes": {
+      "medium": 3,
+      "hard": 3
+    },
+    "medium_hard_unique_dynamics_hashes": {
+      "medium": 1,
+      "hard": 1
+    },
+    "cause": "The seed currently changes only initial spacing in createMatch; standard medium/hard bot decisions are deterministic functions of state. For nearby seeds the first LCG sample can quantize to the same integer offset, and an open-loop action trace can then drive identical dynamics even when the serialized final hash still differs because it includes the seed/rng fields."
+  },
+  "trace_decisions_file": "C:\\dev\\flyweight\\docs\\results\\validation_phase1_b2c6d9f1ae9b\\trace_decisions.jsonl"
+}

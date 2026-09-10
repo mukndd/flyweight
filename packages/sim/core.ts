@@ -2,11 +2,12 @@ import {ACTIONS,type Action,isAction} from '../protocol/index.js';
 import * as legacy from './v1.js';
 export const FPS=60,MAX_FRAMES=5400;
 export type Difficulty='easy'|'medium'|'hard';
+export type OpponentProfile='standard'|'aggressive'|'defensive'|'counter-focused'|'mobile'|'mixed';
 export type SceneName='standard'|'close-combat'|'boundary'|'airborne';
 export interface Fighter{x:number;y:number;vx:number;vy:number;hp:number;face:number;stun:number;cooldown:number;dodgeCooldown:number;invul:number;attack:Action;attackFrame:number;hasHit:boolean;block:boolean;action:Action;damage:number;blocks:number;crouch?:boolean;combo?:number;comboWindow?:number;guardFrames?:number;idleTicks?:number;}
 export interface CombatEvent{frame:number;actor:0|1;target:0|1;type:'hit'|'blocked'|'miss'|'counter'|'shove'|'combo';action:Action;damage:number;}
 export interface Match{v:1|2;seed:number;rng:number;frame:number;limit:number;scene:SceneName;fighters:[Fighter,Fighter];winner:null|0|1|2;hits:{x:number;y:number;frame:number;blocked:boolean}[];events?:CombatEvent[];}
-export interface Replay{v:2;engine:'combat-v2';seed:number;scene:SceneName;limit:number;actions:[Action,Action][];finalHash:string;controller:string;datasetHash:string;difficulty:Difficulty;checkpoint:string;checkpointHash:string;controlMode:string;sourceSegments:{frame:number;controller:string;checkpoint:string}[];}
+export interface Replay{v:2;engine:'combat-v2';seed:number;scene:SceneName;limit:number;actions:[Action,Action][];finalHash:string;controller:string;datasetHash:string;difficulty:Difficulty;checkpoint:string;checkpointHash:string;controlMode:string;sourceSegments:{frame:number;controller:string;checkpoint:string}[];profile?:OpponentProfile;}
 export type AnyReplay=Replay|legacy.Replay;
 export interface Decision{action:Action;rule:string;reason:string;frame:number;}
 const fighter=(x:number,face:number):Fighter=>({x,y:0,vx:0,vy:0,hp:100,face,stun:0,cooldown:0,dodgeCooldown:0,invul:0,attack:0,attackFrame:0,hasHit:false,block:false,action:0,damage:0,blocks:0,crouch:false,combo:0,comboWindow:0,guardFrames:0,idleTicks:0});
@@ -66,24 +67,33 @@ export function step(s:Match,actions:readonly[Action,Action]):Match{
  s.events=events.slice(-64);s.hits=s.hits.filter(h=>s.frame-h.frame<18).slice(-12);
  if(a.hp<=0||b.hp<=0||s.frame>=s.limit)s.winner=a.hp===b.hp?2:a.hp>b.hp?0:1;return s;
 }
-export function decideBot(s:Match,i:0|1,difficulty:Difficulty):Decision{
+export function decideBot(s:Match,i:0|1,difficulty:Difficulty,profile:OpponentProfile='standard'):Decision{
  const f=s.fighters[i],o=s.fighters[1-i],dx=o.x-f.x,d=Math.abs(dx),toward:Action=dx>0?2:1,away:Action=dx>0?1:2;
  const result=(action:Action,rule:string,reason:string):Decision=>({action,rule,reason,frame:s.frame});
  if(s.v===1)return result(legacy.policy(s as legacy.Match,i,difficulty),'v1-policy','Original v1 rules');
- if(difficulty==='easy'&&(s.frame+(s.seed%11))%28>10)return result(0,'reaction-delay','Easy bot is waiting before reacting');
+ if(!['standard','aggressive','defensive','counter-focused','mobile','mixed'].includes(profile))throw Error('Invalid opponent profile');
+ const activeProfile=profile==='mixed'?(['aggressive','defensive','counter-focused','mobile'] as const)[Math.floor(s.frame/360+s.seed)%4]:profile;
+ if(difficulty==='easy'&&(s.frame+(s.seed%11))%28>10&&activeProfile!=='aggressive')return result(0,'reaction-delay','Easy bot is waiting before reacting');
  if(f.stun)return result(4,'hit-recovery','Recovering from a hit');
+ if(activeProfile==='mobile'&&f.y===0&&d<150&&!f.cooldown&&s.frame%150<26)return result(3,'profile-mobile-jump','Mobile profile changes lanes before committing');
  if(f.y>20&&!f.cooldown&&d<100)return result(11,'air-window','Airborne and close enough for an air strike');
- if(o.attack&&d<125){if(difficulty==='hard'&&!f.dodgeCooldown&&(MOVES[o.attack]?.damage??0)>14)return result(7,'dodge-heavy','A heavy attack is winding up nearby');return result(o.attack===9?8:4,'incoming-attack',o.attack===9?'A low attack is incoming: crouch guard':'An attack is incoming: block');}
+ if(o.attack&&d<125){
+  if((activeProfile==='counter-focused'||difficulty==='hard')&&!f.dodgeCooldown&&(MOVES[o.attack]?.damage??0)>14)return result(7,'dodge-heavy','A heavy attack is winding up nearby');
+  return result(o.attack===9?8:4,'incoming-attack',o.attack===9?'A low attack is incoming: crouch guard':'An attack is incoming: block');
+ }
+ if(activeProfile==='defensive'&&d<116&&!f.cooldown&&s.frame%96<36)return result(o.attack===9?8:4,'profile-defensive-guard','Defensive profile probes by guarding in range');
  if(difficulty!=='easy'&&(f.combo??0)>=2&&!f.cooldown&&d<112)return result(13,'finish-combo','Two light hits connected: finish the chain');
- if(!f.cooldown&&d<69&&o.block&&difficulty==='hard')return result(12,'break-guard','Opponent holds guard within shove range');
+ if(!f.cooldown&&o.block&&(difficulty==='hard'&&d<69||activeProfile==='aggressive'&&d<76))return result(12,'break-guard','Opponent holds guard within shove range');
+ if(activeProfile==='aggressive'&&!f.cooldown&&d<112)return result(difficulty==='easy'?5:10,'profile-aggressive-attack','Aggressive profile attacks earlier in range');
+ if(activeProfile==='counter-focused'&&o.cooldown>8&&!f.cooldown&&d<120)return result(10,'profile-counter-punish','Counter profile punishes recovery windows');
  if(!f.cooldown&&d<90){if(o.block&&!o.crouch&&difficulty!=='easy')return result(9,'attack-low','Standing guard leaves a low opening');return result(difficulty==='easy'&&s.frame%120<30?6:5,'attack-window','Opponent is in reach and recovery has finished');}
  const predicted=difficulty==='hard'?Math.abs(dx+o.vx*6):d;
  if(difficulty==='hard'&&predicted<135&&d>90&&!f.cooldown&&o.cooldown>15)return result(10,'punish-recovery','Opponent is recovering: advance into a punch');
- if(d<58&&f.cooldown>12)return result(away,'make-space','Attack is recovering: create room');
+ if((d<58&&f.cooldown>12)||activeProfile==='defensive'&&d<70)return result(away,'make-space','Attack is recovering: create room');
  if(o.y>45&&difficulty==='hard'&&f.y===0&&d<130)return result(3,'follow-air','Nearby opponent is airborne');
  return d>78?result(toward,'close-distance','Opponent is beyond attack reach'):result(0,'wait-opening','Hold position until an attack is ready');
 }
-export function policy(s:Match,i:0|1,d:Difficulty):Action{return decideBot(s,i,d).action;}
+export function policy(s:Match,i:0|1,d:Difficulty,p:OpponentProfile='standard'):Action{return decideBot(s,i,d,p).action;}
 export function observation(s:Match,i:0|1):number[]{const f=s.fighters[i],o=s.fighters[1-i];return [(o.x-f.x)/1000,(o.y-f.y)/150,o.vx/10,o.vy/15,f.vx/10,f.vy/15,Math.abs(o.x-f.x)/1000,o.attack?1:0,o.block?1:0,f.hp/100,o.hp/100,(f.x-36)/928,(964-f.x)/928,f.damage,f.action/13,1-s.frame/s.limit,f.y===0?1:0,f.cooldown===0&&!f.stun&&!f.attack?1:0,(f.combo??0)/2,o.cooldown>10&&!o.attack?1:0].map(v=>Math.max(-1,Math.min(1,v)));}
 export function roundReward(s:Match,i:0|1){const f=s.fighters[i],o=s.fighters[1-i],dealt=100-o.hp,received=100-f.hp;return dealt-1.1*received+(s.winner===i?40:0)-(s.winner===1-i?40:0)+1.5*f.blocks-.08*(f.idleTicks??0)/6+(1-Math.abs(f.x-500)/500)*Math.min(dealt/20,1);}
 export function describeEvent(event:CombatEvent,viewer:0|1=1){const own=event.actor===viewer,move=ACTIONS[event.action].toLowerCase();if(event.type==='counter')return own?'Attack countered by a well-timed block':'Timed block succeeded';if(event.type==='miss')return `${own?'Own':'Opponent'} ${move} missed`;if(event.type==='blocked')return `${own?'Opponent blocked':'Blocked'} ${move} · ${event.damage} chip damage`;return `${own?'Landed':'Received'} ${move} · ${event.damage} damage`;}
@@ -91,8 +101,10 @@ export function hashState(s:Match):string{const str=JSON.stringify(s);let h=2166
 export function parseReplay(text:string):AnyReplay{
  if(new TextEncoder().encode(text).length>1_000_000)throw Error('Replay exceeds 1 MB');const r=JSON.parse(text);
  if(r?.v===1)return legacy.parseReplay(text);
+ const keys=Object.keys(r??{}).sort().join(',');
  const expected=['v','engine','seed','scene','limit','actions','finalHash','controller','datasetHash','difficulty','checkpoint','checkpointHash','controlMode','sourceSegments'].sort().join(',');
- if(!r||r.v!==2||r.engine!=='combat-v2'||Object.keys(r).sort().join(',')!==expected||!Array.isArray(r.actions)||r.actions.length>MAX_FRAMES||r.actions.length>r.limit||!['easy','medium','hard'].includes(r.difficulty))throw Error('Invalid replay schema/version');
+ const expectedWithProfile=['v','engine','seed','scene','limit','actions','finalHash','controller','datasetHash','difficulty','checkpoint','checkpointHash','controlMode','sourceSegments','profile'].sort().join(',');
+ if(!r||r.v!==2||r.engine!=='combat-v2'||(keys!==expected&&keys!==expectedWithProfile)||!Array.isArray(r.actions)||r.actions.length>MAX_FRAMES||r.actions.length>r.limit||!['easy','medium','hard'].includes(r.difficulty)||('profile'in r&&!['standard','aggressive','defensive','counter-focused','mobile','mixed'].includes(r.profile)))throw Error('Invalid replay schema/version');
  createMatch(r.seed,r.scene,r.limit);
  for(const key of ['controller','datasetHash','checkpoint','checkpointHash','controlMode'])if(typeof r[key]!=='string'||r[key].length>80)throw Error('Invalid replay metadata');
  if(typeof r.finalHash!=='string'||!/^[a-f0-9]{8}$/.test(r.finalHash)||!r.actions.every((a:unknown)=>Array.isArray(a)&&a.length===2&&a.every(isAction)))throw Error('Invalid replay actions/hash');
