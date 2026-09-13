@@ -163,3 +163,52 @@ comparison harness (real vs. randomized vs. rule topology under one
 methodology) — the `real`/`degree_randomized`/`weight_shuffled`/`ordinary`/
 `rule`/`random` topology switch these would use already exists and was not
 touched.
+
+## Session addendum — v0.7 research platform foundation (2026-09-14)
+
+This session added a local-first research platform foundation without
+contacting cloud providers, publishing remotes, or changing the fixed
+connectome/trainable-adapter boundary.
+
+- Training Lab now separates editable next-run configuration from current
+  or last completed run state, and labels metric scopes explicitly:
+  best training fitness, best-ever candidate, final-generation best,
+  held-out win rate, held-out episodes, evaluation suite and candidate
+  evaluation reward.
+- `services.brain.trainer.train` now evaluates and returns the best-ever
+  candidate seen across generations rather than blindly using the newest
+  generation's best member.
+- Added local SQLite research registry, immutable local artifact-store
+  interface, trainer interface wrapper, `combat-ladder-v1`/`L01-v1` through
+  `L10-v1`, ladder certification/calibration helpers, topology-control
+  planning, bounded autonomous research loop, daily report generation,
+  read-only dashboard endpoints and human-challenge verification
+  foundations.
+- Added a Research dashboard tab and preserved the existing technical
+  research details drawer. The dashboard reads persisted state from
+  `/research/overview`, `/research/lineage` and `/research/ladder`.
+- Added documentation: `docs/RESEARCH_PLATFORM_FOUNDATION.md`,
+  `docs/COMBAT_V2_PLAN.md`, and `docs/CLOUD_DEPLOYMENT_MANUAL.md`.
+- Demonstrated a bounded local dry run with `npm run research:once`, then
+  restart-equivalent persistence with `npm run research:daily`. The dry run
+  recorded candidates, ladder progress and daily reports, but did not fake
+  certification or promotion.
+
+Verification this session:
+
+| Check | Result |
+|---|---|
+| `npm run test` | Pass — 16/16 |
+| `npm run lint` | Pass |
+| `npm run build` | Pass; existing Node 22.11.0 warning remains |
+| `.venv/Scripts/python -m pytest services/brain/tests -q` | Pass — 87/87 |
+| `.venv/Scripts/python -m ruff check .` | Pass |
+| `.venv/Scripts/python -m bandit -r services -x services/brain/tests` | Pass — 0 findings |
+| `npm run e2e` | Pass — 5/5 against real local Fly Brain service |
+| Research tab Playwright probe | Pass; screenshot at `docs/screenshots/research-dashboard.png` |
+| `scripts/review_project.py size` | Pass — about 1.49 GB total, under 5 GB |
+| `scripts/review_project.py secrets` | No secret-pattern finding; exits nonzero because two pre-existing large trace JSONL artifacts require review |
+
+Not freshly rerun: `npm audit` and `pip-audit`. Prior cached logs remain in
+`logs/`, but this session avoided new registry/advisory network submissions
+under the repository's network restrictions.

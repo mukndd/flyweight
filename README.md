@@ -153,7 +153,15 @@ npm run dev:web     # frontend only (Vite)
 npm run eval:brain -- --seconds 12          # evaluate the current/a checkpoint
 npm run train:brain -- --preset starter     # short CEM training run (see below)
 npm run train:brain -- --preset serious     # long, unattended CEM training run
+npm run research:once                       # tiny bounded local research cycle
+npm run research:daily                      # regenerate the local daily report
 ```
+
+The **Research** tab reads persisted local research state from the brain
+service and shows champion lineage, ladder progress, topology-control
+status, daily report metrics and human challenge status. See
+`docs/RESEARCH_PLATFORM_FOUNDATION.md` for the local registry and
+orchestrator details.
 
 ### Environment variables
 

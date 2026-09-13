@@ -1,16 +1,20 @@
 import {ACTIONS,isAction,type Action,type ClientMessage,type GraphView,type ServerMessage,type Topology} from '../../../packages/protocol';
 import {createMatch,step,decideBot,policy,hashState,parseReplay,replayStart,observation,type Difficulty,type Match,type Replay,type AnyReplay,type SceneName,type Decision} from '../../../packages/sim/core';
-import {brainSocketUrl} from './config';
-export type Mode='human'|'spectate'|'lab'|'replay';
+import {brainHttpUrl,brainSocketUrl} from './config';
+export type Mode='human'|'spectate'|'lab'|'research'|'replay';
+export interface ResearchOverview{training_status:string;current_champion:null|{id:string;candidate_id:string;checkpoint_id:string;checkpoint_hash:string;selection:string};best_ever_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number;best_generation?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string}};latest_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string};reason?:Record<string,unknown>};certified_level:null|{level:number;level_version:string;win_rate:number;matches:number;passed:boolean};today:null|{day:number;date:string;matches_simulated:number;experiments_completed:number;candidates_evaluated:number;promotions:number;rejected_promotions:number;topology_experiments_status:string};counts:{candidates:number};}
+export interface ResearchLineage{nodes:{id:string;parent_id:string|null;parent_champion_id:string|null;trainer:string;generation:number;status:string;checkpoint_id:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;level_version?:string};reason?:Record<string,unknown>;champion:null|{id:string;selection:string}}[];}
+export interface ResearchLadder{version:string;hash:string;levels:{index:number;version:string;difficulty:string;profile:string;seconds:number;min_win_rate:number;min_matches:number}[];}
 export class Engine{
  state:Match=createMatch();mode:Mode='spectate';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
  graph:GraphView|null=null;activity:number[]=[];aggregate=0;brainMs=0;gameMs=0;action:Action=0;scores:number[]=[];available:boolean[]=[];inputs:number[]=[];neuralRule:string|null=null;
  connected=false;ready=false;lastResponse=0;neuralActions=0;activityUpdates=0;checkpoint='seed-initialized';checkpointHash='';datasetHash='unavailable';trainingEnabled=true;requestedCheckpoint='';loadingCheckpoint=false;
  everOnline=false;connectAttempts=0;
  training:Extract<ServerMessage,{type:'train_progress'}>|null=null;checkpoints:Extract<ServerMessage,{type:'checkpoint_list'}>['items']=[];
+ research:ResearchOverview|null=null;lineage:ResearchLineage|null=null;ladder:ResearchLadder|null=null;
  keys=new Set<string>();actions:[Action,Action][]=[];replay:AnyReplay|null=null;lastReplay:AnyReplay|null=null;replayCursor=0;error='';simulationSpeed=1;
  botDecision:Decision={action:0,rule:'waiting',reason:'Waiting for the match to begin',frame:0};humanDecision='No key pressed';history:{frame:number;action:Action}[]=[];sourceSegments:Replay['sourceSegments']=[];
- private ws:WebSocket|null=null;private heartbeat:ReturnType<typeof setInterval>|null=null;private retry:ReturnType<typeof setTimeout>|null=null;private stopped=false;private awaiting=-1;private sentAt=0;private accumulator=0;
+ private ws:WebSocket|null=null;private heartbeat:ReturnType<typeof setInterval>|null=null;private retry:ReturnType<typeof setTimeout>|null=null;private stopped=false;private awaiting=-1;private sentAt=0;private accumulator=0;private fetchingResearch=false;
  get online(){return this.connected&&this.ready&&performance.now()-this.lastResponse<6500;}
  // True only while we've never yet reached a healthy connection and are still
  // within the first few automatic retries — lets the UI say "starting" during
@@ -49,7 +53,8 @@ export class Engine{
   };
   this.ws.onclose=()=>{this.connected=false;this.ready=false;this.loadingCheckpoint=false;this.awaiting=-1;this.graph=null;this.clearSignals();this.brainMs=0;if(!this.stopped)this.retry=setTimeout(()=>this.connect(),3000);};
   this.ws.onerror=()=>{};
-  if(!this.heartbeat)this.heartbeat=setInterval(()=>this.send({v:2,type:'health'}),2000);
+  if(!this.heartbeat)this.heartbeat=setInterval(()=>{this.send({v:2,type:'health'});void this.fetchResearch();},2000);
+  void this.fetchResearch();
  }
  destroy(){this.stopped=true;if(this.retry)clearTimeout(this.retry);if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=null;this.retry=null;this.ws?.close();}
  send(message:ClientMessage){if(this.ws?.readyState===WebSocket.OPEN&&this.ws.bufferedAmount<8192)this.ws.send(JSON.stringify(message));}
@@ -61,6 +66,7 @@ export class Engine{
  setMode(mode:Mode){
   if(this.actions.length&&this.mode!=='replay')this.lastReplay=this.exportReplay();
   this.mode=mode;this.keys.clear();if(mode==='lab'){this.paused=true;this.send({v:2,type:'checkpoint_list'});}
+  else if(mode==='research'){this.paused=true;void this.fetchResearch();}
   else if(mode==='replay'){this.paused=true;this.clearSignals();}else this.reset();
  }
  selectCheckpoint(id:string){this.requestedCheckpoint=id;this.mode='spectate';this.reset();}
@@ -72,7 +78,7 @@ export class Engine{
   else if(k.has('w'))action=3;else if(k.has('c'))action=8;else if(k.has('s'))action=4;else if(k.has('a')&&!k.has('d'))action=1;else if(k.has('d')&&!k.has('a'))action=2;
   this.humanDecision=k.size?[...k].map(v=>v.toUpperCase()).join(' + ')+' → '+ACTIONS[action]:'No key pressed → wait';return action;
  }
- update(delta:number){if(this.paused||this.mode==='lab'||!this.matchStarted)return;this.accumulator+=Math.min(delta,100)*this.simulationSpeed;let count=0;while(this.accumulator>=1000/60&&count++<12){this.advance();this.accumulator-=1000/60;}}
+ update(delta:number){if(this.paused||this.mode==='lab'||this.mode==='research'||!this.matchStarted)return;this.accumulator+=Math.min(delta,100)*this.simulationSpeed;let count=0;while(this.accumulator>=1000/60&&count++<12){this.advance();this.accumulator-=1000/60;}}
  advance(){
   if(this.state.winner!==null)return;const started=performance.now();let pair:[Action,Action];
   if(this.mode==='replay'){if(!this.replay||this.replayCursor>=this.replay.actions.length){this.paused=true;return;}pair=this.replay.actions[this.replayCursor++];}
@@ -95,5 +101,16 @@ export class Engine{
  loadReplay(text:string){const replay=parseReplay(text);this.mode='replay';this.replay=replay;this.state=replayStart(replay);this.replayCursor=0;this.actions=[];this.paused=false;this.matchStarted=true;this.accumulator=0;this.clearSignals();}
  seek(frame:number){if(!this.replay)return;const end=Math.max(0,Math.min(Math.floor(frame),this.replay.actions.length));this.state=replayStart(this.replay);for(let i=0;i<end;i++)step(this.state,this.replay.actions[i]);this.replayCursor=end;this.paused=true;}
  snapshot(){return {state:structuredClone(this.state),online:this.online,neuralActions:this.neuralActions,activityUpdates:this.activityUpdates,aggregate:this.aggregate,activity:[...this.activity],action:this.action,scores:[...this.scores],graph:this.graph,mode:this.mode,paused:this.paused,hash:hashState(this.state),botDecision:this.botDecision};}
+ async fetchResearch(){
+  if(this.fetchingResearch)return;this.fetchingResearch=true;
+  try{
+   const [overview,lineage,ladder]=await Promise.all(['research/overview','research/lineage','research/ladder'].map(async path=>{
+    const response=await fetch(brainHttpUrl(import.meta.env.VITE_BRAIN_URL,location.origin,import.meta.env.DEV,path),{cache:'no-store'});
+    if(!response.ok)throw Error('Research status unavailable');return response.json();
+   }));
+   this.research=overview as ResearchOverview;this.lineage=lineage as ResearchLineage;this.ladder=ladder as ResearchLadder;
+  }catch{}
+  finally{this.fetchingResearch=false;}
+ }
 }
 declare global{interface Window{__FLYWEIGHT__?:{snapshot:()=>ReturnType<Engine['snapshot']>;scene:(name:SceneName,seed?:number,seconds?:number)=>void;pause:(p:boolean)=>void;exportReplay:()=>AnyReplay;loadReplay:(text:string)=>void;step:(frames:number)=>void;engine:Engine};}}
