@@ -11,6 +11,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .checkpoints import list_candidates, load_candidate
 from .config import SETTINGS
+from .human_challenge import create_session
+from .ladder import ladder_manifest
 from .limits import (
     IDLE_SECONDS,
     MAX_CONNECTIONS,
@@ -22,6 +24,7 @@ from .limits import (
 )
 from .neural import TOPOLOGIES, Controller, Graph
 from .protocol import Load, Observation, Reset, Train, parse_message
+from .research_registry import ResearchRegistry
 from .storage import safe_path
 
 graph = None
@@ -79,6 +82,39 @@ async def security_headers(request, call_next):
 async def health():
     return {"v": 2, "type": "health", "status": "ready", "training": training is not None,
             "neurons": graph.n, "edges": graph.e, "synthetic": graph.manifest["synthetic"], "training_enabled": SETTINGS.training_enabled}
+
+
+def read_registry(view):
+    registry = ResearchRegistry()
+    try:
+        return view(registry)
+    finally:
+        registry.close()
+
+
+@app.get("/research/overview")
+async def research_overview():
+    return read_registry(lambda registry: registry.overview())
+
+
+@app.get("/research/lineage")
+async def research_lineage():
+    return read_registry(lambda registry: registry.lineage())
+
+
+@app.get("/research/ladder")
+async def research_ladder():
+    return ladder_manifest()
+
+
+@app.get("/human/session")
+async def human_session():
+    def current(registry):
+        champion = registry.current_champion()
+        if champion:
+            return create_session(champion["id"], champion["checkpoint_hash"])
+        return create_session("seed-initialized", "seed-initialized")
+    return read_registry(current)
 
 
 class TrainingJob:

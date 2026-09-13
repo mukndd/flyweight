@@ -32,7 +32,7 @@ def load_settings(values=None):
         raise ValueError("Invalid environment mode")
     production = mode == "production"
     host = values.get("FLYWEIGHT_BIND_HOST", "127.0.0.1")
-    if host not in ({"127.0.0.1", "0.0.0.0"} if production else {"127.0.0.1"}):
+    if host not in ({"127.0.0.1", "0.0.0.0"} if production else {"127.0.0.1"}):  # nosec B104
         raise ValueError("Invalid bind address")
     raw_port = values.get("PORT", "8000")
     if not raw_port.isascii() or not raw_port.isdigit() or not 1024 <= int(raw_port) <= 65535:
@@ -58,4 +58,3 @@ def load_settings(values=None):
 
 
 SETTINGS = load_settings()
-

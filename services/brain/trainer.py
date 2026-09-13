@@ -1014,6 +1014,10 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                 "evaluation_seeds": EVAL_SEEDS, "resumed_from_generation": resumed_from,
                 "method": "CEM adapters only; topology and biological strengths frozen", "status": "exploratory"}
     best_arrays, checkpoint = controller.arrays(), ""
+    best_checkpoint = ""
+    best_generation = start_generation
+    best_training_fitness = float("-inf")
+    best_training_win_rate = 0.0
     bridge = Bridge()
     try:
         with raw_path.open("a" if resumed_from else "x", encoding="utf-8") as raw:
@@ -1021,16 +1025,26 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
             for generation in range(start_generation + 1, start_generation + generations + 1):
                 if cancelled() or time.monotonic() - started > MAX_TRAIN_SECONDS:
                     emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation-1, "generations": start_generation + generations,
-                                     "reward": 0, "win_rate": 0, "checkpoint": checkpoint, "seed": seed, "status": "cancelled", "run": run_id}))
-                    return checkpoint
+                                     "reward": best_training_fitness if np.isfinite(best_training_fitness) else 0,
+                                     "win_rate": 0, "checkpoint": best_checkpoint, "seed": seed, "status": "cancelled",
+                                     "run": run_id, "trainer": "CEMTrainer", "population": population,
+                                     "scenario_set": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+                                     "best_training_fitness": best_training_fitness if np.isfinite(best_training_fitness) else None,
+                                     "best_generation": best_generation, "best_checkpoint": best_checkpoint}))
+                    return best_checkpoint
                 candidates = rng.normal(mean, std, (population, len(mean))).astype(np.float32)
                 candidates[0] = mean
                 results, rows_by_member = [], []
                 for member, candidate in enumerate(candidates):
                     if cancelled():
                         emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation-1, "generations": start_generation + generations,
-                                         "reward": 0, "win_rate": 0, "checkpoint": checkpoint, "seed": seed, "status": "cancelled", "run": run_id}))
-                        return checkpoint
+                                         "reward": best_training_fitness if np.isfinite(best_training_fitness) else 0,
+                                         "win_rate": 0, "checkpoint": best_checkpoint, "seed": seed, "status": "cancelled",
+                                         "run": run_id, "trainer": "CEMTrainer", "population": population,
+                                         "scenario_set": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+                                         "best_training_fitness": best_training_fitness if np.isfinite(best_training_fitness) else None,
+                                         "best_generation": best_generation, "best_checkpoint": best_checkpoint}))
+                        return best_checkpoint
                     rows = [episode(graph, unpack(candidate), seed + 999 + generation, difficulty, seconds, bridge=bridge)
                             for difficulty in difficulties]
                     stats = summary(rows)
@@ -1042,19 +1056,45 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                 mean = candidates[elite].mean(axis=0)
                 std = np.maximum(sigma_floor, candidates[elite].std(axis=0))
                 best_member = int(np.argmax(results))
-                best_arrays = unpack(candidates[best_member])
+                final_generation_best = float(max(results))
+                generation_arrays = unpack(candidates[best_member])
                 training_win_rate = float(np.mean([r["win"] for r in rows_by_member[best_member]]))
+                if final_generation_best > best_training_fitness:
+                    best_training_fitness = final_generation_best
+                    best_generation = generation
+                    best_training_win_rate = training_win_rate
+                    best_arrays = generation_arrays
+                    best_checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": best_training_fitness})
+                    checkpoint = best_checkpoint
+                elif generation % checkpoint_every == 0 or generation == start_generation + generations:
+                    checkpoint = save_candidate(graph, generation_arrays, {"seed": seed, "generation": generation, "reward": final_generation_best})
                 if generation % checkpoint_every == 0 or generation == start_generation + generations:
-                    checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": max(results)})
                     save_resume_state(run_id, graph, mean, std, generation, config, root=CHECKPOINTS)
                 emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation, "generations": start_generation + generations,
-                                 "reward": max(results), "win_rate": 0, "training_win_rate": training_win_rate,
-                                 "checkpoint": checkpoint, "seed": seed, "status": "training", "run": run_id}))
+                                 "reward": final_generation_best, "win_rate": 0, "training_win_rate": training_win_rate,
+                                 "checkpoint": checkpoint, "seed": seed, "status": "training", "run": run_id,
+                                 "trainer": "CEMTrainer", "population": population,
+                                 "scenario_set": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+                                 "best_training_fitness": best_training_fitness,
+                                 "best_generation": best_generation, "best_checkpoint": best_checkpoint,
+                                 "best_training_win_rate": best_training_win_rate,
+                                 "final_generation_best": final_generation_best,
+                                 "final_generation_win_rate": training_win_rate}))
             report = evaluate(graph, best_arrays, seconds)
-            raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")), "evaluation": report}) + "\n")
+            checkpoint = best_checkpoint
+            raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")),
+                                  "best_generation": best_generation, "best_training_fitness": best_training_fitness,
+                                  "evaluation": report}) + "\n")
             emit(json.dumps({"v": 2, "type": "train_progress", "generation": start_generation + generations, "generations": start_generation + generations,
                              "reward": report["mean_reward"], "win_rate": report["win_rate"], "checkpoint": checkpoint,
-                             "seed": seed, "status": "evaluated candidate", "run": run_id}))
+                             "seed": seed, "status": "evaluated candidate", "run": run_id,
+                             "trainer": "CEMTrainer", "population": population,
+                             "scenario_set": SCENARIO_SET_VERSION, "reward_version": REWARD_VERSION,
+                             "evaluation_suite": report["suite"], "candidate_evaluation_reward": report["mean_reward"],
+                             "held_out_win_rate": report["win_rate"], "held_out_episodes": report["episodes"],
+                             "best_training_fitness": best_training_fitness,
+                             "best_generation": best_generation, "best_checkpoint": best_checkpoint,
+                             "best_training_win_rate": best_training_win_rate}))
     except (ValueError, OSError, RuntimeError, TimeoutError) as error:
         with raw_path.open("a", encoding="utf-8") as raw:
             raw.write(json.dumps({"status": "failed", "failure": type(error).__name__}) + "\n")

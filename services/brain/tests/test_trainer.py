@@ -96,14 +96,15 @@ def test_train_rejects_invalid_search_hyperparameters(graph, tmp_path, monkeypat
                       checkpoint_every=checkpoint_every)
 
 
-def test_checkpoint_every_skips_intermediate_saves(graph, tmp_path, monkeypatch):
+def test_checkpoint_every_preserves_best_ever_candidate(graph, tmp_path, monkeypatch):
     isolate(monkeypatch, tmp_path)
     messages = []
     trainer.train(graph, seed=2, generations=2, population=4, seconds=6, emit=messages.append,
                   difficulties=["easy"], checkpoint_every=2)
     parsed = [json.loads(m) for m in messages]
     training_msgs = [m for m in parsed if m["status"] == "training"]
-    assert training_msgs[0]["checkpoint"] == ""
+    assert training_msgs[0]["best_checkpoint"].startswith("candidate_")
+    assert training_msgs[0]["checkpoint"] == training_msgs[0]["best_checkpoint"]
     assert training_msgs[1]["checkpoint"] != ""
 
 
