@@ -12,13 +12,13 @@ test('public Watch is the default exhibit with reduced navigation',async({page})
  await expect(page.getByRole('button',{name:'Lab'})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Replays'})).toHaveCount(0);
  await expect(page.locator('.experiment-scene')).toBeVisible();
- await expect(page.locator('.fly-station .presentation3d')).toBeVisible();
+ await expect(page.locator('.combat-world3d')).toBeVisible();
  await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().state.frame>90);
  await expect(page.locator('.event-stream')).toContainText(/Selected|landed|blocked|whiffed|countered/i);
  await page.getByRole('button',{name:'8',exact:true}).click();
  expect(await page.evaluate(()=>window.__FLYWEIGHT__!.engine.publicLevel)).toBe(8);
  expect(await page.evaluate(()=>window.__FLYWEIGHT__!.engine.difficulty)).toBe('hard');
- await page.screenshot({path:'docs/screenshots/v10-watch.png',fullPage:true});
+ await page.screenshot({path:'docs/screenshots/v11-watch-wide.png',fullPage:true});
  expect(errors).toEqual([]);
 });
 
@@ -31,16 +31,16 @@ test('Fight setup starts a human challenge and shows a compact result',async({pa
  await expect(page.getByRole('heading',{name:/Ada vs FW-/})).toBeVisible();
  await expect(page.locator('.experiment-scene')).toBeVisible();
  await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().state.frame>90);
- await page.screenshot({path:'docs/screenshots/v10-human-fight.png',fullPage:true});
+ await page.screenshot({path:'docs/screenshots/v11-human-fight.png',fullPage:true});
  await page.evaluate(()=>{
   const engine=window.__FLYWEIGHT__!.engine;
   engine.state.winner=1;
   engine.state.fighters[0].hp=18;
   engine.state.fighters[1].hp=54;
  });
- await expect(page.getByRole('heading',{name:'LOSS'})).toBeVisible();
- await expect(page.locator('.result-metrics')).toContainText('Ada');
- await page.screenshot({path:'docs/screenshots/v10-human-result.png',fullPage:true});
+ await expect(page.getByRole('heading',{name:'THE FLY WON'})).toBeVisible();
+ await expect(page.locator('.result-versus')).toContainText('Ada');
+ await page.screenshot({path:'docs/screenshots/v11-human-result.png',fullPage:true});
 });
 
 test('Science keeps raw machinery out of Watch but available in depth',async({page})=>{
@@ -50,7 +50,7 @@ test('Science keeps raw machinery out of Watch but available in depth',async({pa
  await expect(page.locator('.science-page')).toContainText('Raw checkpoint');
  await expect(page.locator('.science-page')).toContainText('Controller Boundary');
  await expect(page.locator('.science-page')).toContainText('deterministic graph layout');
- await page.screenshot({path:'docs/screenshots/v10-science.png',fullPage:true});
+ await page.locator('.pipeline-diagram').screenshot({path:'docs/screenshots/v11-science-pipeline.png'});
 });
 
 test('mobile public view does not expose dashboard controls or overflow',async({page})=>{
@@ -59,5 +59,5 @@ test('mobile public view does not expose dashboard controls or overflow',async({
  await expect(page.getByRole('heading',{name:'FLYWEIGHT'})).toBeVisible();
  await expect(page.getByRole('button',{name:'Lab'})).toHaveCount(0);
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
- await page.screenshot({path:'docs/screenshots/v10-mobile.png',fullPage:true});
+ await page.screenshot({path:'docs/screenshots/v11-mobile-watch.png',fullPage:true});
 });

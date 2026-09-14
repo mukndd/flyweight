@@ -40,5 +40,28 @@
     "sha256": "e9f73286af86b68389a3c7418becbba5d5f83ce14cbc3257c1d62c62ac168ce1",
     "downloaded_utc": "2026-09-09T11:14:03.456529+00:00"
   },
-  "annotation_commit": "ebd66db2596fcc39c6950fb54ea3efa00f7fe8a0"
+  "annotation_commit": "ebd66db2596fcc39c6950fb54ea3efa00f7fe8a0",
+  "visual_derivatives": {
+    "zenodo_record": "https://zenodo.org/records/18555170",
+    "api_record": {
+      "url": "https://zenodo.org/api/records/18555170",
+      "accessed_utc": "2026-09-14T12:29:49.1901189Z"
+    },
+    "files": {
+      "coordinates.mat": {
+        "url": "https://zenodo.org/api/records/18555170/files/coordinates.mat/content",
+        "bytes": 1885835,
+        "sha256": "12dffd790933c05210021683314a949aa2e9c4d69e81a0768be6decd6daa5aa2",
+        "upstream_checksum": "md5:c55f622a86be58ea5c5b7c9fcb9ee24a",
+        "downloaded_utc": "2026-09-14T12:29:49.1901189Z"
+      },
+      "annotations.mat": {
+        "url": "https://zenodo.org/api/records/18555170/files/annotations.mat/content",
+        "bytes": 574256,
+        "sha256": "ebaa0f367b44edcdeb7297c8d6905226db19df102b4dc6b863154419b0a49ab9",
+        "upstream_checksum": "md5:0d2be44229cd13bc2544e972397503ed",
+        "downloaded_utc": "2026-09-14T12:29:49.1901189Z"
+      }
+    }
+  }
 }

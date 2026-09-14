@@ -368,3 +368,109 @@ Completion estimates after v0.9:
 Next highest-value step: build a richer Fight of the Day / champion-card flow
 that packages one verified replay, topology context and result metrics into a
 single shareable artifact without changing the scientific backend.
+
+## Session addendum — v0.11 art and rendering quality pass (2026-09-14)
+
+This pass kept the v0.10 public structure frozen: `WATCH`, `FIGHT`, and
+`SCIENCE`. It did not add public Lab, replay/debug, training controls, layout
+toggles, new routes, checkpoint IDs in the public HUD, or dashboard card grids.
+
+Rendering changes:
+
+- Added `apps/web/src/world3d.ts` as the shared public 3D scene kit.
+- Added `apps/web/src/CombatWorld3D.tsx`, a Three.js public combat renderer
+  that consumes the existing deterministic `Engine`/combat state and calls
+  `engine.update(delta)` without changing simulation rules, hitboxes, replay
+  schema, trainer behavior, weights, rewards, or promotion gates.
+- Replaced the public Phaser arena rendering with a 3D neural combat test
+  chamber: graphite grid floor, rails, observation glass, overhead fixtures,
+  key/fill/rim lighting, contact shadows, hit sparks, and slight camera impact.
+- Added original 3D combat mannequins constrained to the 2D fight plane with
+  pose mappings for idle, walking, jump/air, crouch/guard, dodge, light/heavy
+  attacks, low/air attacks, shove/combo, hit reaction, victory and defeat.
+- Upgraded the fly/controller presentation to share the richer Drosophila and
+  controller geometry used in the main scene.
+- Enlarged and integrated the fly/operator station into the Watch/Fight scene
+  so the fly and controller are visible alongside the fight rather than an
+  unrelated panel.
+
+Public UI changes:
+
+- Kept Watch compact; polished SEES/ACTION/RESULT and deduplicated repeated
+  low-value event entries.
+- Rebuilt Fight setup as a quick three-part composition: title/status, live fly
+  preview, name/appearance/start controls.
+- Rebuilt the result screen around the frozen 3D match scene with `YOU WON` /
+  `THE FLY WON`, player vs Fly ID, duration, damage dealt/taken, score, Fight
+  Again and Share Result.
+- Reworked Science into editorial flow with a real visual pipeline diagram:
+  `20 game signals -> artificial encoder -> fixed FlyWire connectome ->`
+  `artificial readout -> 14 actions`.
+
+Asset and connectome provenance:
+
+- No external 3D model asset was downloaded. The repo network policy allows
+  only specific official read-only download sources; the best apparent
+  Drosophila model candidate found was on Sketchfab and requires manual
+  license/provenance review before ingestion.
+- Two small Zenodo FlyWire derivative files were downloaded for coordinate
+  investigation only: `coordinates.mat` and `annotations.mat` from record
+  `18555170`. They confirmed coordinate data exists externally but did not
+  provide the root-ID ordering needed for safe selected-neuron mapping.
+- Current runtime assets are original procedural Three.js geometry documented
+  in `docs/VISUAL_ASSETS.md`.
+- The client still does not receive verified selected-neuron anatomical
+  coordinates, centroids, skeletons, meshes, neuropil labels or Codex spatial
+  metadata. The brain panel is therefore intentionally labeled
+  `CONNECTOME ACTIVITY MAP`, not anatomical brain.
+
+Representative screenshots:
+
+- `docs/screenshots/v11-watch-wide.png`
+- `docs/screenshots/v11-watch-fly-controller.png`
+- `docs/screenshots/v11-brain-close.png`
+- `docs/screenshots/v11-human-setup.png`
+- `docs/screenshots/v11-human-fight.png`
+- `docs/screenshots/v11-human-result.png`
+- `docs/screenshots/v11-science-pipeline.png`
+- `docs/screenshots/v11-mobile-watch.png`
+
+Final verification:
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit -p tsconfig.json` | Pass |
+| `npm run test` | Pass — 19/19 |
+| `npm run lint` | Pass |
+| `npm run build` | Pass; existing Node 22.11.0/Vite version warning remains; Three chunk large-warning remains; CSS 14.47 kB gzip 3.94 kB, app chunk 264.38 kB gzip 83.38 kB, Three chunk 709.73 kB gzip 183.92 kB |
+| `node scripts/py.mjs pytest services/brain/tests` | Pass — 96/96, 2 dependency deprecation warnings |
+| `node scripts/py.mjs ruff check services/brain scripts` | Pass |
+| `node scripts/py.mjs bandit -q -r services -x services/brain/tests` | Pass — warnings only for existing `nosec` comment parsing; no failed tests reported |
+| `npm run e2e` | Pass — 4/4 against local web and brain services |
+| `npm audit` | Pass — 0 vulnerabilities |
+| `node scripts/py.mjs pip_audit` | Pass — no known vulnerabilities found |
+| `node scripts/py.mjs scripts.review_project size` | Pass — 1.582 GB total, under 5 GB |
+| `node scripts/py.mjs scripts.review_project secrets` | Nonzero with two pre-existing oversized trace JSONL review findings; no new secret-pattern finding reported |
+| Playwright screenshot capture against `127.0.0.1:5173` and brain service `127.0.0.1:8000` | Pass; no page or console errors, online brain true, activity updates observed, mobile overflow false |
+
+Honest visual self-score after screenshot inspection:
+
+- Fly asset: 6.5/10 — much more recognizable with eyes, wings, abdomen and
+  legs, but still original runtime geometry rather than a high-quality scanned
+  or rigged GLB.
+- Fly animation: 7/10 — wing, antenna, body and leg/controller animation states
+  are readable.
+- Controller interaction: 7/10 — deterministic button/stick mapping is visible,
+  though a rigged external fly could make leg contact more precise.
+- Fighters: 7/10 — no longer debug polygons; stylized mannequins read clearly.
+- Arena/environment: 7/10 — physical lab chamber, grid, rails and observation
+  wall are present.
+- Lighting: 7/10 — key/fill/rim/contact shadows added and verified in screenshots.
+- Brain visualization: 7/10 — active paths now dominate over dim structure.
+- Fight animation: 7/10 — pose states, impact sparks and camera impulse added.
+- Watch composition: 7/10 — unified fight/operator/brain layout; no extra routes.
+- Fight setup: 7/10 — quicker and visually alive, still sparse by design.
+- Result screen: 7.5/10 — final scene gives the match a payoff.
+- Overall screenshot quality: 7/10 — materially better than v0.10, but the
+  single biggest remaining gap is replacing the original fly geometry with a
+  legally reviewed high-quality Drosophila GLB.
