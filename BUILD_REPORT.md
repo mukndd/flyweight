@@ -268,3 +268,103 @@ Verification:
 Not performed: Docker build, `npm audit`, `pip-audit` and real
 cloud/database/object-store integration. No push or deployment was performed
 in this session.
+
+## Session addendum — v0.9 3D presentation layer and visual redesign (2026-09-14)
+
+This session kept Flyweight's deterministic 2D combat simulation and research
+pipeline intact while adding a stronger public-facing "Neuroscience Fight
+Night" presentation layer.
+
+Visual direction:
+
+- Added a cohesive dark event/lab visual system with explicit CSS tokens,
+  typography hierarchy, panel treatment, glow accents, match-state styling and
+  responsive rules in `apps/web/src/v09.css`.
+- Reworked the default route into an Overview experience with Day N, current
+  champion, certified level, live training status and clear Watch/Play/Research
+  calls to action.
+- Reorganized the main navigation around Overview, Play, Watch, Research, Lab,
+  Leaderboard and Replays.
+
+3D and presentation layer:
+
+- Added a lazy-loaded Three.js presentation component that consumes existing
+  match/action state and does not replace the 2D simulation.
+- Added a stylized non-horror Fly mascot, compact arena shell, colored corner
+  lighting and controller prop.
+- Added deterministic action-to-presentation mapping for idle, movement, jump,
+  guard, dodge, attack/combo, victory, defeat and offline states.
+- Added a non-WebGL fallback mascot so the app remains usable if WebGL is not
+  available.
+
+Match, research and human challenge:
+
+- Added the 3D presentation strip to live matches while preserving the Phaser
+  2D fight plane, replay determinism and action logs.
+- Updated the match HUD, action readouts, result card and mode framing.
+- Polished the Research dashboard around current champion, level progress,
+  today's registry counts, topology controls and candidate lineage without
+  making topology-superiority claims.
+- Added a Leaderboard surface for locally verified human exhibition results and
+  made the human challenge easier to enter from Overview and Research.
+
+Performance and assets:
+
+- Added exact pinned dependencies `three@0.181.2` and `@types/three@0.181.0`
+  using `--ignore-scripts`.
+- The 3D layer is dynamically imported from the React component, contains only
+  procedural geometry/materials, uses no external model assets and can be
+  swapped for a real model later.
+- Production build output after this change: CSS 44.13 kB gzip 10.16 kB,
+  Three chunk 709.73 kB gzip 183.92 kB, app chunk 1,468.46 kB gzip 403.78 kB.
+  Vite still reports the pre-existing large-chunk warning and Node 22.11.0
+  warning on this machine.
+
+Scientific safety:
+
+- No combat rules, replay schema, ladder criteria, trainer method, promotion
+  gates, fixed-connectome boundary or topology experiment validity were changed.
+- The 3D layer is explicitly presentational: real match state and controller
+  actions flow into visuals; visuals do not feed back into training/evaluation.
+- Offline and rule/random controls continue to avoid fabricated neural activity.
+
+Representative screenshots:
+
+- `docs/screenshots/v09-overview.png`
+- `docs/screenshots/v09-watch.png`
+- `docs/screenshots/v09-research.png`
+- `docs/screenshots/v09-mobile.png`
+
+Verification:
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit -p tsconfig.json` | Pass |
+| `npm run test` | Pass — 19/19 |
+| `npm run lint` | Pass |
+| `npm run build` | Pass; existing Node 22.11.0/Vite version warning and large-chunk warning remain |
+| `node scripts/py.mjs pytest services/brain/tests` | Pass — 96/96, 2 dependency deprecation warnings |
+| `node scripts/py.mjs ruff check services/brain scripts` | Pass |
+| `npm run e2e` | Pass — 5/5 against real local Fly Brain service |
+| Three.js canvas pixel probe | Pass — desktop hero, match strip and mobile hero all nonblank; no console/page errors |
+| Visual screenshot inspection | Pass — desktop Overview/Watch/Research and mobile Overview showed no obvious overlap or horizontal overflow |
+
+Completion estimates after v0.9:
+
+- 3D presentation: 65% — procedural mascot, controller and arena shell are in
+  place; richer model assets/animation could come later.
+- Public-facing polish: 75% — first impression and navigation are now much
+  stronger, with room for a more cinematic intro/result flow.
+- Dashboard polish: 65% — clearer story and lineage surfaces, but mini charts
+  and report history can still improve.
+- Human challenge experience: 55% — entry, result card and local leaderboard
+  exist; verified ranking/share flows remain basic.
+- Cloud-readiness: 70% — v0.8 foundations remain unchanged; no new cloud work
+  was attempted in this visual phase.
+- Overall Flyweight vision: 72% — the app now reads as a productized live
+  experiment rather than a flat prototype, while deeper science/reporting and
+  media polish remain the next frontier.
+
+Next highest-value step: build a richer Fight of the Day / champion-card flow
+that packages one verified replay, topology context and result metrics into a
+single shareable artifact without changing the scientific backend.

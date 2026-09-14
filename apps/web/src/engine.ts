@@ -1,18 +1,19 @@
 import {ACTIONS,isAction,type Action,type ClientMessage,type GraphView,type ServerMessage,type Topology} from '../../../packages/protocol';
 import {createMatch,step,decideBot,policy,hashState,parseReplay,replayStart,observation,type Difficulty,type Match,type Replay,type AnyReplay,type SceneName,type Decision} from '../../../packages/sim/core';
 import {brainHttpUrl,brainSocketUrl} from './config';
-export type Mode='human'|'spectate'|'lab'|'research'|'replay';
-export interface ResearchOverview{training_status:string;current_champion:null|{id:string;candidate_id:string;checkpoint_id:string;checkpoint_hash:string;selection:string};best_ever_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number;best_generation?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string}};latest_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string};reason?:Record<string,unknown>};certified_level:null|{level:number;level_version:string;win_rate:number;matches:number;passed:boolean};today:null|{day:number;date:string;matches_simulated:number;experiments_completed:number;candidates_evaluated:number;promotions:number;rejected_promotions:number;topology_experiments_status:string};counts:{candidates:number};}
+export type Mode='overview'|'human'|'spectate'|'lab'|'research'|'leaderboard'|'replay';
+export type HumanMatches={matches:{id:string;champion_id:string;match_seed:number;scenario:string;replay_hash:string;tag:string;result:{result:string;damage_dealt:number;damage_received:number;damage_differential:number;duration:number}}[]};
+export interface ResearchOverview{training_status:string;worker_status?:null|{state:string;message:string;metrics?:Record<string,unknown>};current_champion:null|{id:string;candidate_id:string;checkpoint_id:string;checkpoint_hash:string;selection:string};best_ever_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number;best_generation?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string}};latest_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string};reason?:Record<string,unknown>};certified_level:null|{level:number;level_version:string;win_rate:number;matches:number;passed:boolean};today:null|{day:number;date:string;matches_simulated:number;experiments_completed:number;candidates_evaluated:number;promotions:number;rejected_promotions:number;topology_experiments_status:string};counts:{candidates:number};}
 export interface ResearchLineage{nodes:{id:string;parent_id:string|null;parent_champion_id:string|null;trainer:string;generation:number;status:string;checkpoint_id:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;level_version?:string};reason?:Record<string,unknown>;champion:null|{id:string;selection:string}}[];}
 export interface ResearchLadder{version:string;hash:string;levels:{index:number;version:string;difficulty:string;profile:string;seconds:number;min_win_rate:number;min_matches:number}[];}
 export interface TopologyStatus{conditions:{condition:string;topology:string;status?:string;trainable?:boolean;edge_count?:number;control_hash:string}[];comparisons:{id:string;suite:string;candidate_id:string|null;metrics:{condition?:string;status?:string;seed?:number;win_rate?:number;mean_reward?:number;wins?:number;episodes?:number;topology?:string;compute?:{cpu_seconds?:number};reason?:string}}[];}
 export class Engine{
- state:Match=createMatch();mode:Mode='spectate';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
+ state:Match=createMatch();mode:Mode='overview';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
  graph:GraphView|null=null;activity:number[]=[];aggregate=0;brainMs=0;gameMs=0;action:Action=0;scores:number[]=[];available:boolean[]=[];inputs:number[]=[];neuralRule:string|null=null;
  connected=false;ready=false;lastResponse=0;neuralActions=0;activityUpdates=0;checkpoint='seed-initialized';checkpointHash='';datasetHash='unavailable';trainingEnabled=true;requestedCheckpoint='';loadingCheckpoint=false;
  everOnline=false;connectAttempts=0;
  training:Extract<ServerMessage,{type:'train_progress'}>|null=null;checkpoints:Extract<ServerMessage,{type:'checkpoint_list'}>['items']=[];
- research:ResearchOverview|null=null;lineage:ResearchLineage|null=null;ladder:ResearchLadder|null=null;topologyStatus:TopologyStatus|null=null;
+ research:ResearchOverview|null=null;lineage:ResearchLineage|null=null;ladder:ResearchLadder|null=null;topologyStatus:TopologyStatus|null=null;humanMatches:HumanMatches|null=null;
  keys=new Set<string>();actions:[Action,Action][]=[];replay:AnyReplay|null=null;lastReplay:AnyReplay|null=null;replayCursor=0;error='';simulationSpeed=1;
  botDecision:Decision={action:0,rule:'waiting',reason:'Waiting for the match to begin',frame:0};humanDecision='No key pressed';history:{frame:number;action:Action}[]=[];sourceSegments:Replay['sourceSegments']=[];
  private ws:WebSocket|null=null;private heartbeat:ReturnType<typeof setInterval>|null=null;private retry:ReturnType<typeof setTimeout>|null=null;private stopped=false;private awaiting=-1;private sentAt=0;private accumulator=0;private fetchingResearch=false;
@@ -67,7 +68,7 @@ export class Engine{
  setMode(mode:Mode){
   if(this.actions.length&&this.mode!=='replay')this.lastReplay=this.exportReplay();
   this.mode=mode;this.keys.clear();if(mode==='lab'){this.paused=true;this.send({v:2,type:'checkpoint_list'});}
-  else if(mode==='research'){this.paused=true;void this.fetchResearch();}
+  else if(mode==='overview'||mode==='research'||mode==='leaderboard'){this.paused=true;void this.fetchResearch();}
   else if(mode==='replay'){this.paused=true;this.clearSignals();}else this.reset();
  }
  selectCheckpoint(id:string){this.requestedCheckpoint=id;this.mode='spectate';this.reset();}
@@ -79,7 +80,7 @@ export class Engine{
   else if(k.has('w'))action=3;else if(k.has('c'))action=8;else if(k.has('s'))action=4;else if(k.has('a')&&!k.has('d'))action=1;else if(k.has('d')&&!k.has('a'))action=2;
   this.humanDecision=k.size?[...k].map(v=>v.toUpperCase()).join(' + ')+' → '+ACTIONS[action]:'No key pressed → wait';return action;
  }
- update(delta:number){if(this.paused||this.mode==='lab'||this.mode==='research'||!this.matchStarted)return;this.accumulator+=Math.min(delta,100)*this.simulationSpeed;let count=0;while(this.accumulator>=1000/60&&count++<12){this.advance();this.accumulator-=1000/60;}}
+ update(delta:number){if(this.paused||this.mode==='overview'||this.mode==='leaderboard'||this.mode==='lab'||this.mode==='research'||!this.matchStarted)return;this.accumulator+=Math.min(delta,100)*this.simulationSpeed;let count=0;while(this.accumulator>=1000/60&&count++<12){this.advance();this.accumulator-=1000/60;}}
  advance(){
   if(this.state.winner!==null)return;const started=performance.now();let pair:[Action,Action];
   if(this.mode==='replay'){if(!this.replay||this.replayCursor>=this.replay.actions.length){this.paused=true;return;}pair=this.replay.actions[this.replayCursor++];}
@@ -105,11 +106,11 @@ export class Engine{
  async fetchResearch(){
   if(this.fetchingResearch)return;this.fetchingResearch=true;
   try{
-   const [overview,lineage,ladder,topology]=await Promise.all(['research/overview','research/lineage','research/ladder','research/topology'].map(async path=>{
+   const [overview,lineage,ladder,topology,humanMatches]=await Promise.all(['research/overview','research/lineage','research/ladder','research/topology','human/matches'].map(async path=>{
     const response=await fetch(brainHttpUrl(import.meta.env.VITE_BRAIN_URL,location.origin,import.meta.env.DEV,path),{cache:'no-store'});
     if(!response.ok)throw Error('Research status unavailable');return response.json();
    }));
-   this.research=overview as ResearchOverview;this.lineage=lineage as ResearchLineage;this.ladder=ladder as ResearchLadder;this.topologyStatus=topology as TopologyStatus;
+   this.research=overview as ResearchOverview;this.lineage=lineage as ResearchLineage;this.ladder=ladder as ResearchLadder;this.topologyStatus=topology as TopologyStatus;this.humanMatches=humanMatches as HumanMatches;
   }catch{}
   finally{this.fetchingResearch=false;}
  }

@@ -1,7 +1,7 @@
 import {test,expect} from '@playwright/test';
 test('full live round, measured signals, expanded replay and deterministic playback',async({page})=>{
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
- await page.goto('/');await page.waitForFunction(()=>window.__FLYWEIGHT__?.snapshot().online);
+ await page.goto('/');await expect(page.getByRole('heading',{name:/fruit-fly connectome/i})).toBeVisible();await expect(page.locator('.presentation3d.hero')).toBeVisible();await page.getByRole('button',{name:'Watch',exact:true}).click();await page.waitForFunction(()=>window.__FLYWEIGHT__?.snapshot().online);
  await expect(page.locator('.match-pair')).toContainText('BOT');await expect(page.locator('.match-pair')).toContainText('FLY BRAIN');
  await page.evaluate(()=>window.__FLYWEIGHT__!.scene('close-combat',783,45));
  await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().neuralActions>12);
@@ -42,7 +42,7 @@ test('play, every keyboard action, controls focus and compact pause',async({page
  await expect(page.locator('.pause-card')).toBeHidden();
 });
 test('difficulty, research controls, reconnect, responsive and reduced motion',async({page})=>{
- await page.goto('/');await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().online);
+ await page.goto('/');await page.getByRole('button',{name:'Watch',exact:true}).click();await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().online);
  for(const value of ['easy','medium','hard']){await page.getByLabel('Bot difficulty').selectOption(value);expect(await page.evaluate(()=>window.__FLYWEIGHT__!.engine.difficulty)).toBe(value);}
  await page.getByRole('button',{name:'Arena only',exact:true}).click();await expect(page.locator('.decision-panels')).toBeHidden();
  await page.getByRole('button',{name:'Fight and decisions',exact:true}).click();
@@ -61,7 +61,7 @@ test('difficulty, research controls, reconnect, responsive and reduced motion',a
 });
 test('training cancellation and safe replay rejection',async({page})=>{
  await page.goto('/');await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().online);
- await page.getByRole('button',{name:'Train',exact:true}).click();await page.getByRole('spinbutton',{name:'Generations'}).fill('20');
+ await page.getByRole('button',{name:'Lab',exact:true}).click();await page.getByRole('spinbutton',{name:'Generations'}).fill('20');
  await page.getByRole('button',{name:'Start candidate run ↗'}).click();await page.waitForTimeout(500);await page.getByRole('button',{name:'Stop training'}).click();
  await expect(page.locator('.lab-status')).toContainText('cancelled');
  await page.screenshot({path:'docs/screenshots/training-lab.png',fullPage:true});
@@ -69,7 +69,7 @@ test('training cancellation and safe replay rejection',async({page})=>{
 });
 test('offline demo remains playable without fabricated neural activity',async({page})=>{
  await page.routeWebSocket('ws://127.0.0.1:8000/ws',ws=>ws.close());
- await page.goto('/');await expect(page.locator('.warning')).toContainText('Using the demo bot');
+ await page.goto('/');await expect(page.locator('.warning')).toContainText('Using the demo bot');await page.getByRole('button',{name:'Watch',exact:true}).click();
  await expect(page.locator('.match-pair')).toContainText('DEMO BOT');
  await page.evaluate(()=>window.__FLYWEIGHT__!.scene('close-combat',2,6));
  await page.waitForFunction(()=>window.__FLYWEIGHT__!.snapshot().state.winner!==null,null,{timeout:10000});
