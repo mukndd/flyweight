@@ -13,6 +13,10 @@ No cloud resources were contacted or created in this phase.
 
 The local code now has SQLite metadata and local immutable artifact storage
 interfaces that can be replaced by Postgres/S3-compatible implementations.
+The v0.8 implementation adds validated production roles, PostgreSQL
+migrations, an optional PostgreSQL registry adapter, an S3-compatible
+artifact adapter, a daily evaluator, a topology-control batch runner and a
+local burn-in harness. See `docs/PRODUCTION_BRINGUP_V08.md`.
 
 ## Railway
 
@@ -33,6 +37,7 @@ Manual later:
 1. Create a Postgres database.
 2. Add a private connection string as a secret, not a committed file.
 3. Port `research_registry` schema to migrations.
+   The initial migration is now `services/brain/migrations/001_research_platform.sql`.
 4. If using Supabase exposed schemas, apply RLS/access decisions deliberately
    before exposing anything through a public Data API.
 5. Keep service-role credentials out of browser-visible variables.

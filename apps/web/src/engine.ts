@@ -5,13 +5,14 @@ export type Mode='human'|'spectate'|'lab'|'research'|'replay';
 export interface ResearchOverview{training_status:string;current_champion:null|{id:string;candidate_id:string;checkpoint_id:string;checkpoint_hash:string;selection:string};best_ever_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number;best_generation?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string}};latest_candidate:null|{id:string;generation:number;status:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;matches?:number;level_version?:string};reason?:Record<string,unknown>};certified_level:null|{level:number;level_version:string;win_rate:number;matches:number;passed:boolean};today:null|{day:number;date:string;matches_simulated:number;experiments_completed:number;candidates_evaluated:number;promotions:number;rejected_promotions:number;topology_experiments_status:string};counts:{candidates:number};}
 export interface ResearchLineage{nodes:{id:string;parent_id:string|null;parent_champion_id:string|null;trainer:string;generation:number;status:string;checkpoint_id:string;training_metrics:{fitness?:number};validation_metrics:{win_rate?:number;level_version?:string};reason?:Record<string,unknown>;champion:null|{id:string;selection:string}}[];}
 export interface ResearchLadder{version:string;hash:string;levels:{index:number;version:string;difficulty:string;profile:string;seconds:number;min_win_rate:number;min_matches:number}[];}
+export interface TopologyStatus{conditions:{condition:string;topology:string;status?:string;trainable?:boolean;edge_count?:number;control_hash:string}[];comparisons:{id:string;suite:string;candidate_id:string|null;metrics:{condition?:string;status?:string;seed?:number;win_rate?:number;mean_reward?:number;wins?:number;episodes?:number;topology?:string;compute?:{cpu_seconds?:number};reason?:string}}[];}
 export class Engine{
  state:Match=createMatch();mode:Mode='spectate';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
  graph:GraphView|null=null;activity:number[]=[];aggregate=0;brainMs=0;gameMs=0;action:Action=0;scores:number[]=[];available:boolean[]=[];inputs:number[]=[];neuralRule:string|null=null;
  connected=false;ready=false;lastResponse=0;neuralActions=0;activityUpdates=0;checkpoint='seed-initialized';checkpointHash='';datasetHash='unavailable';trainingEnabled=true;requestedCheckpoint='';loadingCheckpoint=false;
  everOnline=false;connectAttempts=0;
  training:Extract<ServerMessage,{type:'train_progress'}>|null=null;checkpoints:Extract<ServerMessage,{type:'checkpoint_list'}>['items']=[];
- research:ResearchOverview|null=null;lineage:ResearchLineage|null=null;ladder:ResearchLadder|null=null;
+ research:ResearchOverview|null=null;lineage:ResearchLineage|null=null;ladder:ResearchLadder|null=null;topologyStatus:TopologyStatus|null=null;
  keys=new Set<string>();actions:[Action,Action][]=[];replay:AnyReplay|null=null;lastReplay:AnyReplay|null=null;replayCursor=0;error='';simulationSpeed=1;
  botDecision:Decision={action:0,rule:'waiting',reason:'Waiting for the match to begin',frame:0};humanDecision='No key pressed';history:{frame:number;action:Action}[]=[];sourceSegments:Replay['sourceSegments']=[];
  private ws:WebSocket|null=null;private heartbeat:ReturnType<typeof setInterval>|null=null;private retry:ReturnType<typeof setTimeout>|null=null;private stopped=false;private awaiting=-1;private sentAt=0;private accumulator=0;private fetchingResearch=false;
@@ -104,11 +105,11 @@ export class Engine{
  async fetchResearch(){
   if(this.fetchingResearch)return;this.fetchingResearch=true;
   try{
-   const [overview,lineage,ladder]=await Promise.all(['research/overview','research/lineage','research/ladder'].map(async path=>{
+   const [overview,lineage,ladder,topology]=await Promise.all(['research/overview','research/lineage','research/ladder','research/topology'].map(async path=>{
     const response=await fetch(brainHttpUrl(import.meta.env.VITE_BRAIN_URL,location.origin,import.meta.env.DEV,path),{cache:'no-store'});
     if(!response.ok)throw Error('Research status unavailable');return response.json();
    }));
-   this.research=overview as ResearchOverview;this.lineage=lineage as ResearchLineage;this.ladder=ladder as ResearchLadder;
+   this.research=overview as ResearchOverview;this.lineage=lineage as ResearchLineage;this.ladder=ladder as ResearchLadder;this.topologyStatus=topology as TopologyStatus;
   }catch{}
   finally{this.fetchingResearch=false;}
  }

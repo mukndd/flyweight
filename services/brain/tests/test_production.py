@@ -7,6 +7,7 @@ from services.brain import app as server
 from services.brain import neural, trainer
 from services.brain.config import load_settings
 from services.brain.limits import ORIGIN
+from services.brain.production import load_compute_limits, load_production_env
 
 
 @pytest.mark.parametrize("values", [
@@ -30,6 +31,29 @@ def test_production_configuration():
                        "FLYWEIGHT_ALLOWED_HOSTS": "brain.example.com,healthcheck.railway.app"})
     assert s.production and not s.training_enabled and s.port == 8080
     assert load_settings({}).host == "127.0.0.1"
+
+
+def test_production_role_env_and_compute_governor():
+    env = {
+        "FLYWEIGHT_SERVICE_ROLE": "RESEARCH_WORKER",
+        "DATABASE_URL": "postgresql://db.example.com/flyweight",
+        "ARTIFACT_BACKEND": "s3",
+        "S3_ENDPOINT": "https://r2.example.com",
+        "S3_BUCKET": "flyweight-artifacts",
+        "S3_ACCESS_KEY_ID": "access",
+        "S3_SECRET_ACCESS_KEY": "secret",
+        "MAX_DAILY_EXPERIMENTS": "2",
+        "MAX_GENERATIONS_PER_EXPERIMENT": "4",
+        "MAX_POPULATION": "8",
+        "MAX_EXPERIMENT_RUNTIME": "60",
+    }
+    prod = load_production_env(env)
+    assert prod.role == "RESEARCH_WORKER"
+    assert prod.limits.within_experiment(4, 8, 60)
+    assert not prod.limits.within_experiment(5, 8, 60)
+    assert load_compute_limits({"MAX_DAILY_EXPERIMENTS": "0"}).max_daily_experiments == 0
+    with pytest.raises(ValueError):
+        load_production_env({"FLYWEIGHT_SERVICE_ROLE": "RESEARCH_WORKER", "DATABASE_URL": "https://example.com"})
 
 
 def test_dev_default_accepts_127_and_localhost_origins():

@@ -19,6 +19,7 @@ class TrainerConfig:
     sigma_init: float = .4
     sigma_floor: float = .04
     checkpoint_every: int = 1
+    topology: str = "real"
 
     def as_kwargs(self):
         return {
@@ -31,6 +32,7 @@ class TrainerConfig:
             "sigma_init": self.sigma_init,
             "sigma_floor": self.sigma_floor,
             "checkpoint_every": self.checkpoint_every,
+            "topology": self.topology,
         }
 
 

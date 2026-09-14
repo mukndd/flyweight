@@ -21,6 +21,12 @@
 # validated processed graph already present at FLYWEIGHT_DATA_DIR (no
 # silent synthetic fallback in production) — mount it as a read-only volume.
 
+FROM node:24-slim AS sim-build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.json tsconfig.sim.json ./
+COPY packages ./packages
+RUN npm ci --ignore-scripts && node node_modules/typescript/bin/tsc -p tsconfig.sim.json
+
 FROM python:3.12-slim AS build
 WORKDIR /app
 COPY requirements.lock ./
@@ -34,9 +40,11 @@ ENV PYTHONUNBUFFERED=1 \
     PATH=/install/bin:$PATH \
     PYTHONPATH=/install/lib/python3.12/site-packages
 COPY --from=build /install /install
+COPY --from=sim-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=sim-build /app/dist ./dist
+COPY --from=sim-build /app/packages ./packages
 COPY services ./services
-COPY scripts/serve_brain.py ./scripts/serve_brain.py
-COPY scripts/__init__.py ./scripts/__init__.py
+COPY scripts ./scripts
 RUN mkdir -p data/processed checkpoints logs .runtime \
     && chown -R flyweight:flyweight /app
 USER flyweight

@@ -212,3 +212,59 @@ Verification this session:
 Not freshly rerun: `npm audit` and `pip-audit`. Prior cached logs remain in
 `logs/`, but this session avoided new registry/advisory network submissions
 under the repository's network restrictions.
+
+## Session addendum — v0.8 production bring-up and topology batch (2026-09-14)
+
+This session continued v0.7 and added production bring-up foundations without
+contacting cloud providers, remotes, or deployment APIs.
+
+- Added validated production roles for Web, Brain/API, Research Worker and
+  Daily Evaluator; added production npm entrypoints and a names-only
+  `.env.example` contract.
+- Added PostgreSQL/Supabase-compatible migrations and an optional
+  parameterized Postgres registry adapter.
+- Added an S3-compatible content-addressed artifact adapter suitable for R2,
+  with fake-transport tests and no live network calls.
+- Added compute-governor validation, worker status/lease recovery,
+  immutable daily evaluator, local burn-in harness, production bootstrap check,
+  and read-only public dashboard APIs for reports, topology comparisons,
+  worker status and verified human matches.
+- Added a bounded topology-control batch runner and rendered persisted
+  comparison results in the Research dashboard.
+
+Addendum-required topology batch:
+
+- Command: `node scripts/py.mjs services.brain.topology_batch --synthetic --db .runtime/v08_topology_batch.sqlite --seeds 9401,9402 --generations 1 --population 4 --seconds 6 --heldout-matches 6 --project-day 6 --report-date 2026-09-14`
+- Result: complete; 7 topology conditions, 13 evaluations, 8 trained
+  candidates persisted in the registry.
+- Conditions: real connectome, degree-preserving randomized, weight-shuffled,
+  matched random recurrent, rule baseline, random-action baseline; direct
+  baseline recorded as `planned_interface_only`.
+- Summary: `docs/results/v08_topology_batch_2026-09-14.json`.
+- Boundary: synthetic-fixture evidence only; no topology-superiority claim.
+
+Burn-in:
+
+- Command: `node scripts/py.mjs services.brain.burn_in --synthetic --db .runtime/v08_burn_in_final.sqlite --date 2026-09-14`
+- Result: complete; stale lease recovery true; one research cycle complete;
+  daily evaluator complete once for 2026-09-15; second daily run returned
+  `already_exists`; dashboard state present.
+
+Verification:
+
+| Check | Result |
+|---|---|
+| `node scripts/py.mjs pytest services/brain/tests` | Pass — 95/95 |
+| `node scripts/py.mjs ruff check services/brain scripts` | Pass |
+| `npm run test` | Pass — 16/16 |
+| `npm run lint` | Pass |
+| `npm run build` | Pass; existing Node 22.11.0/Vite version warning remains |
+| `node scripts/py.mjs bandit -q -r services -x services/brain/tests` | Pass — 0 findings |
+| Browser smoke | Pass — Research dashboard rendered topology evidence; no overlay or console errors; screenshot `docs/screenshots/v08-topology-dashboard.png` |
+| `npm run e2e` | Pass — 5/5 after starting `npm run dev`; an earlier attempt failed because no dev server was running |
+| `node scripts/py.mjs scripts.review_project size` | Pass — ~1.50 GB total, under 5 GB |
+| `node scripts/py.mjs scripts.review_project secrets` | Nonzero with two pre-existing oversized trace JSONL review findings; no new secret-pattern finding reported |
+
+Not performed: Docker build, `npm audit`, `pip-audit` and real
+cloud/database/object-store integration. No push or deployment was performed
+in this session.

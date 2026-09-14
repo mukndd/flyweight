@@ -6,6 +6,7 @@ today, structured around tables that can be mapped to PostgreSQL later.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import time
@@ -45,7 +46,8 @@ def decode(value):
 
 
 def default_db_path():
-    return CHECKPOINTS / "research.sqlite"
+    configured = os.environ.get("FLYWEIGHT_RESEARCH_DB", "")
+    return Path(configured) if configured else CHECKPOINTS / "research.sqlite"
 
 
 def validate_db_path(path):
@@ -129,6 +131,11 @@ class ResearchRegistry:
                     selection TEXT NOT NULL,
                     evidence_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS canonical_champion(
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    champion_id TEXT NOT NULL REFERENCES champions(id),
+                    updated_ns INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS checkpoints(
                     id TEXT PRIMARY KEY,
                     candidate_id TEXT,
@@ -189,6 +196,16 @@ class ResearchRegistry:
                     tag TEXT NOT NULL,
                     created_ns INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS human_sessions(
+                    session_id TEXT PRIMARY KEY,
+                    champion_id TEXT NOT NULL,
+                    checkpoint_hash TEXT NOT NULL,
+                    match_seed INTEGER NOT NULL,
+                    scenario TEXT NOT NULL,
+                    created_ns INTEGER NOT NULL,
+                    expires_ns INTEGER NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS leaderboard_entries(
                     id TEXT PRIMARY KEY,
                     human_match_id TEXT NOT NULL REFERENCES human_matches(id),
@@ -202,6 +219,26 @@ class ResearchRegistry:
                     owner TEXT NOT NULL,
                     expires_ns INTEGER NOT NULL,
                     updated_ns INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS worker_status(
+                    name TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    experiment_id TEXT,
+                    message TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    heartbeat_ns INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS artifact_metadata(
+                    id TEXT PRIMARY KEY,
+                    artifact_type TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    storage_key TEXT NOT NULL UNIQUE,
+                    experiment_id TEXT,
+                    candidate_id TEXT,
+                    champion_id TEXT,
+                    created_ns INTEGER NOT NULL
                 );
                 """
             )
@@ -344,6 +381,30 @@ class ResearchRegistry:
             )
         return ident
 
+    def promote_transactional(self, candidate_id, checkpoint_id, checkpoint_hash, graph_hash, evidence, selection="automatic_gate"):
+        ident = stable_id("champion")
+        stamp = now_ns()
+        with self.con:
+            self.con.execute(
+                """
+                INSERT INTO champions(
+                    id, candidate_id, checkpoint_id, checkpoint_hash, graph_hash, promoted_ns,
+                    selection, evidence_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ident, candidate_id, checkpoint_id, checkpoint_hash, graph_hash, stamp, selection, encode(evidence)),
+            )
+            self.con.execute(
+                """
+                INSERT INTO canonical_champion(singleton, champion_id, updated_ns)
+                VALUES(1, ?, ?)
+                ON CONFLICT(singleton) DO UPDATE SET champion_id=excluded.champion_id,
+                updated_ns=excluded.updated_ns
+                """,
+                (ident, stamp),
+            )
+        return ident
+
     def record_checkpoint(self, checkpoint_id, candidate_id, sha256, byte_count, uri):
         with self.con:
             self.con.execute(
@@ -353,6 +414,20 @@ class ResearchRegistry:
                 """,
                 (checkpoint_id, candidate_id, sha256, int(byte_count), uri, now_ns()),
             )
+
+    def record_artifact(self, artifact_type, sha256, byte_count, storage_key, experiment_id=None, candidate_id=None, champion_id=None):
+        ident = stable_id("artifact")
+        with self.con:
+            self.con.execute(
+                """
+                INSERT INTO artifact_metadata(
+                    id, artifact_type, sha256, bytes, storage_key, experiment_id,
+                    candidate_id, champion_id, created_ns
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ident, artifact_type, sha256, int(byte_count), storage_key, experiment_id, candidate_id, champion_id, now_ns()),
+            )
+        return ident
 
     def record_ladder_certification(self, result):
         ident = stable_id("cert")
@@ -393,16 +468,93 @@ class ResearchRegistry:
         return ident
 
     def record_daily_report(self, project_day, report_date, report):
+        existing = self.con.execute(
+            "SELECT id, report_json FROM daily_reports WHERE project_day = ? AND report_date = ?",
+            (int(project_day), report_date),
+        ).fetchone()
+        if existing:
+            return existing["id"]
         ident = stable_id("day")
         with self.con:
             self.con.execute(
                 """
-                INSERT OR REPLACE INTO daily_reports(id, project_day, report_date, report_json, created_ns)
+                INSERT INTO daily_reports(id, project_day, report_date, report_json, created_ns)
                 VALUES(?, ?, ?, ?, ?)
                 """,
                 (ident, int(project_day), report_date, encode(report), now_ns()),
             )
         return ident
+
+    def record_human_session(self, session, ttl_seconds=3600):
+        stamp = now_ns()
+        with self.con:
+            self.con.execute(
+                """
+                INSERT INTO human_sessions(
+                    session_id, champion_id, checkpoint_hash, match_seed, scenario,
+                    created_ns, expires_ns, used
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    session["session_id"],
+                    session["champion_id"],
+                    session["checkpoint_hash"],
+                    session["match_seed"],
+                    session["scenario"],
+                    stamp,
+                    stamp + int(ttl_seconds * 1_000_000_000),
+                ),
+            )
+
+    def claim_human_session(self, session_id):
+        stamp = now_ns()
+        with self.con:
+            row = self.con.execute(
+                "SELECT * FROM human_sessions WHERE session_id = ? AND used = 0 AND expires_ns > ?",
+                (session_id, stamp),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown or expired human session")
+            self.con.execute("UPDATE human_sessions SET used = 1 WHERE session_id = ?", (session_id,))
+        return dict(row)
+
+    def record_human_match(self, match_result):
+        ident = stable_id("humanmatch")
+        with self.con:
+            self.con.execute(
+                """
+                INSERT INTO human_matches(
+                    id, session_id, champion_id, match_seed, scenario, result_json,
+                    replay_hash, verified, tag, created_ns
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, 'HUMAN_EXHIBITION', ?)
+                """,
+                (
+                    ident,
+                    match_result["session_id"],
+                    match_result["champion_id"],
+                    match_result["match_seed"],
+                    match_result["scenario"],
+                    encode(match_result),
+                    match_result["replay_hash"],
+                    now_ns(),
+                ),
+            )
+        return ident
+
+    def record_leaderboard_entries(self, human_match_id, entries):
+        created = []
+        with self.con:
+            for entry in entries:
+                ident = stable_id("leader")
+                self.con.execute(
+                    """
+                    INSERT INTO leaderboard_entries(id, human_match_id, nickname, metric, value, created_ns)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (ident, human_match_id, entry["nickname"], entry["metric"], float(entry["value"]), now_ns()),
+                )
+                created.append(ident)
+        return created
 
     def acquire_lease(self, name, owner, ttl_seconds=300):
         stamp = now_ns()
@@ -426,8 +578,47 @@ class ResearchRegistry:
         with self.con:
             self.con.execute("DELETE FROM worker_leases WHERE name = ? AND owner = ?", (name, owner))
 
+    def record_worker_status(self, name, owner, state, experiment_id=None, message="", metrics=None):
+        if state not in {"idle", "training", "validating", "certifying", "budget_exhausted", "error"}:
+            raise ValueError("Invalid worker state")
+        stamp = now_ns()
+        with self.con:
+            self.con.execute(
+                """
+                INSERT INTO worker_status(name, owner, state, experiment_id, message, metrics_json, heartbeat_ns)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET owner=excluded.owner, state=excluded.state,
+                experiment_id=excluded.experiment_id, message=excluded.message,
+                metrics_json=excluded.metrics_json, heartbeat_ns=excluded.heartbeat_ns
+                """,
+                (name, owner, state, experiment_id, message[:200], encode(metrics or {}), stamp),
+            )
+
+    def recover_interrupted_runs(self, older_than_ns=0):
+        cutoff = now_ns() - int(older_than_ns)
+        rows = self.con.execute(
+            "SELECT id, experiment_id FROM runs WHERE status = 'running' AND started_ns <= ?",
+            (cutoff,),
+        ).fetchall()
+        with self.con:
+            for row in rows:
+                self.con.execute("UPDATE runs SET status = ?, ended_ns = ? WHERE id = ?", ("failed", now_ns(), row["id"]))
+                self.con.execute(
+                    "UPDATE experiments SET status = ?, updated_ns = ? WHERE id = ?",
+                    ("failed", now_ns(), row["experiment_id"]),
+                )
+        return [row["id"] for row in rows]
+
     def current_champion(self):
-        row = self.con.execute("SELECT * FROM champions ORDER BY promoted_ns DESC LIMIT 1").fetchone()
+        row = self.con.execute(
+            """
+            SELECT champions.* FROM canonical_champion
+            JOIN champions ON champions.id = canonical_champion.champion_id
+            WHERE canonical_champion.singleton = 1
+            """
+        ).fetchone()
+        if row is None:
+            row = self.con.execute("SELECT * FROM champions ORDER BY promoted_ns DESC LIMIT 1").fetchone()
         return dict(row) if row else None
 
     def latest_candidate(self):
@@ -447,6 +638,7 @@ class ResearchRegistry:
         ).fetchone()
         running = self.con.execute("SELECT COUNT(*) AS count FROM runs WHERE status = 'running'").fetchone()
         candidate_count = self.con.execute("SELECT COUNT(*) AS count FROM candidates").fetchone()
+        worker = self.con.execute("SELECT * FROM worker_status ORDER BY heartbeat_ns DESC LIMIT 1").fetchone()
         champion = self.current_champion()
         return {
             "schema_version": SCHEMA_VERSION,
@@ -458,6 +650,7 @@ class ResearchRegistry:
             "certified_level": decode(cert["result_json"]) if cert else None,
             "today": decode(today["report_json"]) if today else None,
             "counts": {"candidates": int(candidate_count["count"] if candidate_count else 0)},
+            "worker_status": self._worker(worker) if worker else None,
         }
 
     def lineage(self, limit=80):
@@ -467,6 +660,70 @@ class ResearchRegistry:
             for row in self.con.execute("SELECT * FROM champions ORDER BY promoted_ns ASC").fetchall()
         }
         return {"nodes": [self._candidate(row) | {"champion": champions.get(row["id"])} for row in rows]}
+
+    def daily_reports(self, limit=30):
+        rows = self.con.execute(
+            "SELECT * FROM daily_reports ORDER BY project_day DESC LIMIT ?", (min(int(limit), 90),)
+        ).fetchall()
+        return {"reports": [decode(row["report_json"]) for row in rows]}
+
+    def topology_status(self, limit=80):
+        rows = self.con.execute(
+            "SELECT * FROM topology_conditions ORDER BY created_ns DESC LIMIT ?", (min(int(limit), 200),)
+        ).fetchall()
+        evaluations = self.con.execute(
+            """
+            SELECT * FROM evaluations
+            WHERE suite LIKE 'topology-control-batch-v1:%'
+            ORDER BY created_ns DESC LIMIT ?
+            """,
+            (min(int(limit), 200),),
+        ).fetchall()
+        return {
+            "conditions": [
+                {
+                    "id": row["id"],
+                    "experiment_id": row["experiment_id"],
+                    "condition": row["condition"],
+                    "graph_hash": row["graph_hash"],
+                    "control_hash": row["control_hash"],
+                    "config": decode(row["config_json"]),
+                    "created_ns": row["created_ns"],
+                }
+                for row in rows
+            ],
+            "comparisons": [
+                {
+                    "id": row["id"],
+                    "suite": row["suite"],
+                    "candidate_id": row["candidate_id"],
+                    "metrics": decode(row["metrics_json"]),
+                    "created_ns": row["created_ns"],
+                }
+                for row in evaluations
+            ],
+        }
+
+    def recent_human_matches(self, limit=20):
+        rows = self.con.execute(
+            "SELECT * FROM human_matches WHERE verified = 1 ORDER BY created_ns DESC LIMIT ?",
+            (min(int(limit), 50),),
+        ).fetchall()
+        return {
+            "matches": [
+                {
+                    "id": row["id"],
+                    "champion_id": row["champion_id"],
+                    "match_seed": row["match_seed"],
+                    "scenario": row["scenario"],
+                    "result": decode(row["result_json"]),
+                    "replay_hash": row["replay_hash"],
+                    "tag": row["tag"],
+                    "created_ns": row["created_ns"],
+                }
+                for row in rows
+            ]
+        }
 
     def _candidate(self, row):
         if row is None:
@@ -507,4 +764,15 @@ class ResearchRegistry:
             "promoted_ns": row["promoted_ns"],
             "selection": row["selection"],
             "evidence": decode(row["evidence_json"]),
+        }
+
+    def _worker(self, row):
+        row = dict(row)
+        return {
+            "name": row["name"],
+            "state": row["state"],
+            "experiment_id": row["experiment_id"],
+            "message": row["message"],
+            "metrics": decode(row["metrics_json"]),
+            "heartbeat_ns": row["heartbeat_ns"],
         }

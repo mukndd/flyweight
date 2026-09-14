@@ -11,6 +11,7 @@ for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEX
 import uvicorn  # noqa: E402
 
 from services.brain.config import SETTINGS  # noqa: E402
+from services.brain.production import load_production_env, structured_log  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,6 +37,11 @@ def log_config():
 
 async def main():
     log_config()
+    if SETTINGS.production:
+        env = load_production_env()
+        if env.role != "BRAIN_API":
+            raise ValueError("prod:brain requires FLYWEIGHT_SERVICE_ROLE=BRAIN_API")
+        structured_log("brain_api_start", host=SETTINGS.host, port=SETTINGS.port, role=env.role)
     loop = asyncio.get_running_loop()
     def on_exception(loop, context):
         error = context.get("exception")

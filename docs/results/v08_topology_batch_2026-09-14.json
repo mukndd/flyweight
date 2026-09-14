@@ -1,0 +1,78 @@
+{
+  "version": "topology-control-batch-v1",
+  "date": "2026-09-14",
+  "status": "complete",
+  "registry_db": "C:\\dev\\flyweight\\.runtime\\v08_topology_batch.sqlite",
+  "experiment_id": "exp_a26f7caaf9b341e8",
+  "synthetic": true,
+  "graph_hash": "b7fbb4f9f9cdac1ce2f322921bfeee5291202c36deded16dda917c83283a2fa2",
+  "seeds": [9401, 9402],
+  "held_out_scenarios": [
+    "scenario_test_0001",
+    "scenario_test_0002",
+    "scenario_test_0003",
+    "scenario_test_0004",
+    "scenario_test_0005",
+    "scenario_test_0006"
+  ],
+  "training_budget": {
+    "generations": 1,
+    "population": 4,
+    "seconds": 6,
+    "difficulties": ["easy"]
+  },
+  "persisted_registry_counts": {
+    "topology_conditions": 7,
+    "evaluations": 13,
+    "trained_candidates": 8
+  },
+  "conditions": {
+    "REAL_CONNECTOME": {
+      "runs": 2,
+      "status": "held_out_evaluated",
+      "mean_win_rate": 0.0,
+      "mean_reward": -125.36839664683757,
+      "mean_cpu_seconds": 0.4375
+    },
+    "DEGREE_PRESERVING_RANDOMIZED": {
+      "runs": 2,
+      "status": "held_out_evaluated",
+      "mean_win_rate": 0.0,
+      "mean_reward": -98.48541518364632,
+      "mean_cpu_seconds": 0.5
+    },
+    "WEIGHT_SHUFFLED": {
+      "runs": 2,
+      "status": "held_out_evaluated",
+      "mean_win_rate": 0.0,
+      "mean_reward": -102.81385167662609,
+      "mean_cpu_seconds": 0.546875
+    },
+    "MATCHED_RANDOM_RECURRENT": {
+      "runs": 2,
+      "status": "held_out_evaluated",
+      "mean_win_rate": 0.0,
+      "mean_reward": -99.63933543422743,
+      "mean_cpu_seconds": 0.609375
+    },
+    "RULE_BASELINE": {
+      "runs": 2,
+      "status": "descriptive_baseline",
+      "mean_win_rate": 1.0,
+      "mean_reward": 103.42556427684882,
+      "mean_cpu_seconds": 0.0859375
+    },
+    "RANDOM_ACTION_BASELINE": {
+      "runs": 2,
+      "status": "descriptive_baseline",
+      "mean_win_rate": 0.0,
+      "mean_reward": -87.86245583345472,
+      "mean_cpu_seconds": 0.140625
+    },
+    "DIRECT_BASELINE": {
+      "status": "planned_interface_only",
+      "reason": "Direct no-recurrent adapter/readout baseline is not implemented in this phase."
+    }
+  },
+  "claim_boundary": "Initial bounded synthetic-fixture evidence batch only. Do not infer topology superiority."
+}

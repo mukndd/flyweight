@@ -8,12 +8,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel, ConfigDict, Field
 
 from .checkpoints import list_candidates, load_candidate
 from .config import SETTINGS
-from .human_challenge import create_session
+from .human_challenge import create_session, leaderboard_values, verified_match_result
 from .ladder import ladder_manifest
 from .limits import (
+    CHECKPOINTS,
     IDLE_SECONDS,
     MAX_CONNECTIONS,
     MAX_MESSAGE_BYTES,
@@ -25,11 +27,14 @@ from .limits import (
 from .neural import TOPOLOGIES, Controller, Graph
 from .protocol import Load, Observation, Reset, Train, parse_message
 from .research_registry import ResearchRegistry
-from .storage import safe_path
+from .storage import read_json, safe_path
 
 graph = None
 connections = 0
 training = None
+canonical_arrays = None
+canonical_checkpoint = "seed-initialized"
+canonical_checkpoint_hash = ""
 
 
 class RateLimiter:
@@ -48,13 +53,20 @@ class RateLimiter:
 
 @asynccontextmanager
 async def lifespan(_app):
-    global graph
+    global canonical_arrays, canonical_checkpoint, canonical_checkpoint_hash, graph
     if not (PROCESSED / "flywire.json").exists() and not (PROCESSED / "synthetic.json").exists():
         if SETTINGS.production:
             raise ValueError("Production requires a prepared and validated graph")
         from .preprocess import synthetic
         synthetic()
     graph = Graph(synthetic=not (PROCESSED / "flywire.json").exists())
+    if SETTINGS.production:
+        pointer = CHECKPOINTS / "canonical.json"
+        if not pointer.exists():
+            raise ValueError("Production requires a validated canonical champion pointer")
+        meta = read_json(pointer)
+        canonical_arrays, candidate = load_candidate(graph, meta["id"])
+        canonical_checkpoint, canonical_checkpoint_hash = candidate["id"], candidate["sha256"]
     # Cache bounded control matrices once; messages cannot launch repeated rewiring.
     for topology in TOPOLOGIES:
         graph.matrix(topology)
@@ -64,7 +76,7 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Flyweight local brain", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=list(SETTINGS.origins), allow_methods=["GET"], allow_headers=[])
+app.add_middleware(CORSMiddleware, allow_origins=list(SETTINGS.origins), allow_methods=["GET", "POST"], allow_headers=["content-type"])
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(SETTINGS.allowed_hosts) + ([] if SETTINGS.production else ["testserver"]))
 
 
@@ -107,14 +119,53 @@ async def research_ladder():
     return ladder_manifest()
 
 
+@app.get("/research/reports")
+async def research_reports():
+    return read_registry(lambda registry: registry.daily_reports())
+
+
+@app.get("/research/topology")
+async def research_topology():
+    return read_registry(lambda registry: registry.topology_status())
+
+
+@app.get("/human/matches")
+async def human_matches():
+    return read_registry(lambda registry: registry.recent_human_matches())
+
+
 @app.get("/human/session")
 async def human_session():
     def current(registry):
         champion = registry.current_champion()
-        if champion:
-            return create_session(champion["id"], champion["checkpoint_hash"])
-        return create_session("seed-initialized", "seed-initialized")
+        session = create_session(champion["id"], champion["checkpoint_hash"]) if champion else create_session("seed-initialized", "seed-initialized")
+        registry.record_human_session(session)
+        return session
     return read_registry(current)
+
+
+class HumanMatchSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    session_id: str = Field(pattern=r"^human_[a-f0-9]{16}$")
+    nickname: str = Field(default="", max_length=24)
+    replay: str = Field(min_length=20, max_length=1_000_000)
+
+
+@app.post("/human/match")
+async def human_match(submission: HumanMatchSubmission):
+    def record(registry):
+        session = registry.claim_human_session(submission.session_id)
+        result = verified_match_result(session, submission.replay)
+        match_id = registry.record_human_match(result)
+        entries = leaderboard_values(result, submission.nickname)
+        registry.record_leaderboard_entries(match_id, entries)
+        return {"status": "accepted", "match_id": match_id, "leaderboard_entries": len(entries), "result": result}
+    return read_registry(record)
+
+
+@app.get("/research/status")
+async def research_status():
+    return read_registry(lambda registry: registry.overview().get("worker_status") or {"state": "idle"})
 
 
 class TrainingJob:
@@ -192,9 +243,9 @@ async def websocket(ws: WebSocket):
             async with send_lock:
                 await asyncio.wait_for(ws.send_json(value), timeout=2)
     limiter = RateLimiter()
-    controller = Controller(graph)
-    checkpoint = "seed-initialized"
-    checkpoint_hash = ""
+    controller = Controller(graph, arrays=canonical_arrays) if canonical_arrays is not None else Controller(graph)
+    checkpoint = canonical_checkpoint
+    checkpoint_hash = canonical_checkpoint_hash
     owned_job = None
     last_seq = -1
     current_seed = 783
@@ -222,8 +273,8 @@ async def websocket(ws: WebSocket):
                 break
             if isinstance(message, Reset):
                 current_seed = message.seed
-                controller = Controller(graph, message.seed, message.topology)
-                last_seq, checkpoint, checkpoint_hash = -1, "seed-initialized", ""
+                controller = Controller(graph, message.seed, message.topology, canonical_arrays)
+                last_seq, checkpoint, checkpoint_hash = -1, canonical_checkpoint, canonical_checkpoint_hash
                 await status()
             elif isinstance(message, Observation):
                 if message.seq <= last_seq:

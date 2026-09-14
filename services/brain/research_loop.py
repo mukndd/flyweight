@@ -10,6 +10,7 @@ from .checkpoints import load_candidate
 from .ladder import calibrate_ladder, compact_certification, evaluate_level
 from .limits import CHECKPOINTS
 from .neural import Controller, Graph
+from .production import load_compute_limits, load_production_env, structured_log
 from .research_registry import PROJECT_EPOCH, ResearchRegistry, stable_id
 from .scenarios import REWARD_VERSION, SCENARIO_SET_VERSION
 from .storage import read_json
@@ -28,8 +29,12 @@ def current_champion_checkpoint(graph):
     pointer = CHECKPOINTS / "canonical.json"
     if pointer.exists():
         meta = read_json(pointer)
-        arrays, _ = load_candidate(graph, meta["id"])
-        return meta["id"], meta["sha256"], arrays
+        try:
+            arrays, _ = load_candidate(graph, meta["id"])
+            return meta["id"], meta["sha256"], arrays
+        except ValueError:
+            if not graph.manifest["synthetic"]:
+                raise
     controller = Controller(graph, 783)
     return "seed-initialized", "seed-initialized", controller.arrays()
 
@@ -72,7 +77,17 @@ def ensure_champion_record(registry, graph, checkpoint_id, checkpoint_hash):
     return champion["id"]
 
 
-def select_experiment(seed, tiny=False):
+CONDITION_TO_TOPOLOGY = {
+    "REAL_CONNECTOME": "real",
+    "DEGREE_PRESERVING_RANDOMIZED": "degree_randomized",
+    "WEIGHT_SHUFFLED": "weight_shuffled",
+    "MATCHED_RANDOM_RECURRENT": "ordinary",
+}
+
+
+def select_experiment(seed, tiny=False, topology_condition="REAL_CONNECTOME"):
+    if topology_condition not in CONDITION_TO_TOPOLOGY:
+        raise ValueError("Unsupported trainable topology condition")
     return {
         "dimension": "cem_seed_budget_probe",
         "seed": seed,
@@ -80,7 +95,8 @@ def select_experiment(seed, tiny=False):
         "population": 4 if tiny else 8,
         "seconds": 6 if tiny else 8,
         "difficulties": ["easy"],
-        "topology_condition": "REAL_CONNECTOME",
+        "topology_condition": topology_condition,
+        "topology": CONDITION_TO_TOPOLOGY[topology_condition],
         "promotion_mode": "record_only_no_fake_promotion",
     }
 
@@ -89,13 +105,25 @@ def run_once(args):
     graph = Graph(synthetic=bool(args.synthetic))
     registry = ResearchRegistry(args.db)
     owner = stable_id("worker")
+    limits = load_compute_limits()
     if not registry.acquire_lease("research-loop", owner, ttl_seconds=args.lease_seconds):
         registry.close()
         raise ValueError("Another research worker owns the lease")
     try:
+        recovered = registry.recover_interrupted_runs(older_than_ns=args.lease_seconds * 1_000_000_000)
+        registry.record_worker_status(
+            "research-loop",
+            owner,
+            "idle",
+            message="lease acquired",
+            metrics={"recovered_interrupted_runs": len(recovered)},
+        )
         champion_checkpoint, champion_hash, _champion_arrays = current_champion_checkpoint(graph)
         champion_record_id = ensure_champion_record(registry, graph, champion_checkpoint, champion_hash)
-        config = select_experiment(args.seed, args.tiny)
+        config = select_experiment(args.seed, args.tiny, args.topology_condition)
+        if not limits.within_experiment(config["generations"], config["population"], config["seconds"]):
+            registry.record_worker_status("research-loop", owner, "budget_exhausted", message="selected experiment exceeds governor")
+            return {"status": "budget_exhausted", "reason": "selected experiment exceeds configured compute limits"}
         topology_config = fair_config(
             seed=args.seed,
             generations=config["generations"],
@@ -109,6 +137,7 @@ def run_once(args):
             {"loop_version": RESEARCH_LOOP_VERSION, "selected": config, "topology": topology_config},
             "running",
         )
+        registry.record_worker_status("research-loop", owner, "training", exp_id, "training challenger", {"seed": args.seed})
         for record in condition_records(graph, topology_config):
             registry.record_topology_condition(exp_id, record["condition"], record["graph_hash"], record["control_hash"], record)
         validate_condition_records(condition_records(graph, topology_config))
@@ -120,6 +149,7 @@ def run_once(args):
             population=config["population"],
             seconds=config["seconds"],
             difficulties=tuple(config["difficulties"]),
+            topology=config["topology"],
         )
         checkpoint = ""
         try:
@@ -136,7 +166,7 @@ def run_once(args):
                 trainer="CEMTrainer",
                 trainer_version=CEMTrainer.version,
                 training_seed=args.seed,
-                graph_condition="REAL_CONNECTOME",
+                graph_condition=config["topology_condition"],
                 graph_hash=graph.manifest["graph_hash"],
                 scenario_version=SCENARIO_SET_VERSION,
                 reward_version=REWARD_VERSION,
@@ -164,9 +194,11 @@ def run_once(args):
                 arrays,
                 args.level,
                 checkpoint_meta["sha256"],
+                topology=config["topology"],
                 matches=args.ladder_matches,
                 champion_id=champion_record_id,
             )
+            registry.record_worker_status("research-loop", owner, "certifying", exp_id, "ladder certification/progress", {"matches": args.ladder_matches})
             metrics = compact_certification(certification)
             registry.record_evaluation(
                 candidate_id,
@@ -188,6 +220,7 @@ def run_once(args):
             registry.update_experiment(exp_id, "failed")
             raise ValueError(f"Research cycle failed: {type(error).__name__}") from error
         report = generate_daily_report(registry, graph)
+        registry.record_worker_status("research-loop", owner, "idle", message="cycle complete", metrics={"experiments": 1})
         return {
             "status": "complete",
             "experiment_id": exp_id,
@@ -240,13 +273,16 @@ def generate_daily_report(registry, graph, date=None):
 
 def run_loop(args):
     deadline = time.monotonic() + args.time_budget_seconds
+    limits = load_compute_limits()
     results = []
     cycles = 0
-    while cycles < args.candidate_budget and time.monotonic() < deadline:
+    budget = min(args.candidate_budget, limits.max_daily_experiments)
+    while cycles < budget and time.monotonic() < deadline:
         args.seed += cycles
         results.append(run_once(args))
         cycles += 1
-    return {"status": "complete", "cycles": cycles, "results": results}
+    status = "budget_exhausted" if cycles >= budget else "complete"
+    return {"status": status, "cycles": cycles, "results": results}
 
 
 def main():
@@ -261,7 +297,16 @@ def main():
     parser.add_argument("--candidate-budget", type=int, default=1)
     parser.add_argument("--time-budget-seconds", type=int, default=600)
     parser.add_argument("--lease-seconds", type=int, default=900)
+    parser.add_argument("--topology-condition", default="REAL_CONNECTOME", choices=sorted(CONDITION_TO_TOPOLOGY))
+    parser.add_argument("--production", action="store_true")
     args = parser.parse_args()
+    if args.production:
+        env = load_production_env()
+        if env.role != "RESEARCH_WORKER":
+            raise ValueError("prod:research requires FLYWEIGHT_SERVICE_ROLE=RESEARCH_WORKER")
+        if args.synthetic:
+            raise ValueError("Production research requires real FlyWire graph")
+        structured_log("research_worker_start", topology_condition=args.topology_condition, candidate_budget=args.candidate_budget)
     if args.command == "once":
         result = run_once(args)
     elif args.command == "run":

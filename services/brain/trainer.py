@@ -973,16 +973,19 @@ def scenario_phase2_report(graph, checkpoint="canonical", seconds=8, pilot=False
 
 
 def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, cancelled=lambda: False,
-          difficulties=None, elite_fraction=1 / 3, sigma_init=.4, sigma_floor=.04, checkpoint_every=1, run_id=None):
+          difficulties=None, elite_fraction=1 / 3, sigma_init=.4, sigma_floor=.04, checkpoint_every=1, run_id=None,
+          topology="real"):
     if type(seed) is not int or not 0 <= seed <= 999_999 or not 1 <= generations <= 20 or not 4 <= population <= 12 or not 6 <= seconds <= 30:
         raise ValueError("Training hyperparameter bounds")
     difficulties = list(difficulties) if difficulties is not None else list(DIFFICULTIES)
     if not difficulties or any(d not in DIFFICULTIES for d in difficulties) or len(difficulties) != len(set(difficulties)):
         raise ValueError("Invalid training difficulty set")
+    if topology not in {"real", "degree_randomized", "weight_shuffled", "ordinary"}:
+        raise ValueError("Topology condition is not trainable by CEM adapters")
     if not 0 < elite_fraction <= 1 or not 0 < sigma_floor <= sigma_init or not np.isfinite(sigma_init) or not 1 <= checkpoint_every <= generations:
         raise ValueError("Invalid search hyperparameters")
     CHECKPOINTS.mkdir(parents=True, exist_ok=True)
-    controller = Controller(graph, seed)
+    controller = Controller(graph, seed, topology=topology)
     shapes = {k: v.shape for k, v in controller.arrays().items()}
     sizes = {k: int(np.prod(v)) for k, v in shapes.items()}
     def unpack(vector):
@@ -1045,7 +1048,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                                          "best_training_fitness": best_training_fitness if np.isfinite(best_training_fitness) else None,
                                          "best_generation": best_generation, "best_checkpoint": best_checkpoint}))
                         return best_checkpoint
-                    rows = [episode(graph, unpack(candidate), seed + 999 + generation, difficulty, seconds, bridge=bridge)
+                    rows = [episode(graph, unpack(candidate), seed + 999 + generation, difficulty, seconds, topology=topology, bridge=bridge)
                             for difficulty in difficulties]
                     stats = summary(rows)
                     raw.write(json.dumps({"generation": generation, "member": member, "rows": rows, "summary": stats}) + "\n")
@@ -1064,10 +1067,10 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                     best_generation = generation
                     best_training_win_rate = training_win_rate
                     best_arrays = generation_arrays
-                    best_checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": best_training_fitness})
+                    best_checkpoint = save_candidate(graph, best_arrays, {"seed": seed, "generation": generation, "reward": best_training_fitness, "topology": topology})
                     checkpoint = best_checkpoint
                 elif generation % checkpoint_every == 0 or generation == start_generation + generations:
-                    checkpoint = save_candidate(graph, generation_arrays, {"seed": seed, "generation": generation, "reward": final_generation_best})
+                    checkpoint = save_candidate(graph, generation_arrays, {"seed": seed, "generation": generation, "reward": final_generation_best, "topology": topology})
                 if generation % checkpoint_every == 0 or generation == start_generation + generations:
                     save_resume_state(run_id, graph, mean, std, generation, config, root=CHECKPOINTS)
                 emit(json.dumps({"v": 2, "type": "train_progress", "generation": generation, "generations": start_generation + generations,
@@ -1080,7 +1083,7 @@ def train(graph, seed=783, generations=2, population=6, seconds=12, emit=print, 
                                  "best_training_win_rate": best_training_win_rate,
                                  "final_generation_best": final_generation_best,
                                  "final_generation_win_rate": training_win_rate}))
-            report = evaluate(graph, best_arrays, seconds)
+            report = evaluate(graph, best_arrays, seconds, topology=topology)
             checkpoint = best_checkpoint
             raw.write(json.dumps({"checkpoint": checkpoint, "checkpoint_hash": digest(CHECKPOINTS / (checkpoint + ".npz")),
                                   "best_generation": best_generation, "best_training_fitness": best_training_fitness,
@@ -1120,13 +1123,14 @@ def main():
     parser.add_argument("--sigma-floor", type=float, default=None, dest="sigma_floor")
     parser.add_argument("--checkpoint-every", type=int, default=None, dest="checkpoint_every")
     parser.add_argument("--resume", help="Training run id to continue (see the 'run' field in train_progress output / run_<id>.jsonl). Fails clearly if the saved search state doesn't match this connectome graph.")
+    parser.add_argument("--topology", default="real", choices=["real", "degree_randomized", "weight_shuffled", "ordinary"], help="Train adapters against one approved graph condition.")
     parser.add_argument("--matches", type=int, default=120, help="Validation-only total standard-profile matches; explicit research command only.")
     parser.add_argument("--trace-limit", type=int, default=24, dest="trace_limit", help="Validation-only trace sample count per difficulty.")
     parser.add_argument("--pilot", action="store_true", help="Scenario Phase 2 only: run the small CEM pilot after baseline evaluation.")
     args = parser.parse_args()
     train_only = ("generations", "population", "difficulties", "elite_fraction", "sigma_init", "sigma_floor", "checkpoint_every", "preset", "resume")
-    if args.command != "train" and any(getattr(args, name) is not None for name in train_only):
-        parser.error("--preset/--generations/--population/--seconds/--difficulties/--elite-fraction/--sigma-init/--sigma-floor/--checkpoint-every/--resume only apply to the train command")
+    if args.command != "train" and (any(getattr(args, name) is not None for name in train_only) or args.topology != "real"):
+        parser.error("--preset/--generations/--population/--seconds/--difficulties/--elite-fraction/--sigma-init/--sigma-floor/--checkpoint-every/--resume/--topology only apply to the train command")
     if args.preset:
         conflicting = [n for n in ("generations", "population", "seconds", "difficulties", "elite_fraction", "sigma_init", "sigma_floor", "checkpoint_every") if getattr(args, n) is not None]
         if conflicting:
@@ -1156,7 +1160,7 @@ def main():
             train(graph, args.seed, generations, population, seconds, emit=lambda line: print(line, flush=True),
                   cancelled=lambda: bool(args.cancel_id and safe_path(ROOT / ".runtime", args.cancel_id).exists()),
                   difficulties=difficulties, elite_fraction=elite_fraction, sigma_init=sigma_init,
-                  sigma_floor=sigma_floor, checkpoint_every=checkpoint_every, run_id=args.resume)
+                  sigma_floor=sigma_floor, checkpoint_every=checkpoint_every, run_id=args.resume, topology=args.topology)
         except (ValueError, OSError) as error:
             parser.error(str(error))
     elif args.command == "rollback":

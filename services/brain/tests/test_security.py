@@ -189,6 +189,49 @@ def test_security_headers(client):
     assert "access-control-allow-origin" not in client.get("/health", headers={"origin": "https://evil.example"}).headers
 
 
+def test_public_research_and_human_challenge_endpoints(client, tmp_path, monkeypatch):
+    from services.brain.research_registry import ResearchRegistry
+
+    db = tmp_path / "research.sqlite"
+
+    def registry_factory():
+        return ResearchRegistry(db)
+
+    monkeypatch.setattr(server, "ResearchRegistry", registry_factory)
+    session = client.get("/human/session").json()
+    replay = json.dumps(
+        {
+            "v": 2,
+            "controlMode": "human",
+            "seed": session["match_seed"],
+            "checkpointHash": session["checkpoint_hash"],
+        }
+    )
+    monkeypatch.setattr(
+        server,
+        "verified_match_result",
+        lambda issued, text: {
+            "session_id": issued["session_id"],
+            "champion_id": issued["champion_id"],
+            "match_seed": issued["match_seed"],
+            "scenario": issued["scenario"],
+            "result": "human_win",
+            "damage_dealt": 100,
+            "damage_received": 10,
+            "damage_differential": 90,
+            "duration": 12.0,
+            "replay_hash": "e" * 64,
+            "tag": "HUMAN_EXHIBITION",
+        },
+    )
+    accepted = client.post("/human/match", json={"session_id": session["session_id"], "nickname": "Ada", "replay": replay})
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "accepted"
+    assert client.get("/human/matches").json()["matches"][0]["tag"] == "HUMAN_EXHIBITION"
+    assert client.get("/research/reports").json()["reports"] == []
+    assert client.get("/research/status").json()["state"] == "idle"
+
+
 def test_training_cancel(graph, tmp_path, monkeypatch):
     monkeypatch.setattr(trainer, "CHECKPOINTS", tmp_path)
     messages = []

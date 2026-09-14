@@ -5,6 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('../dist/web/',import.meta.url));
 const production=process.env.FLYWEIGHT_ENV==='production';
+if(production&&process.env.FLYWEIGHT_SERVICE_ROLE!=='WEB')throw Error('prod:web requires FLYWEIGHT_SERVICE_ROLE=WEB');
 const host=process.env.FLYWEIGHT_BIND_HOST??'127.0.0.1';
 if(!['127.0.0.1',...(production?['0.0.0.0']:[])].includes(host))throw Error('Invalid bind address');
 const rawPort=process.env.PORT??'5180';if(!/^\d{4,5}$/.test(rawPort)||Number(rawPort)>65535||Number(rawPort)<1024)throw Error('Invalid port');
