@@ -8,7 +8,7 @@ export interface ResearchLineage{nodes:{id:string;parent_id:string|null;parent_c
 export interface ResearchLadder{version:string;hash:string;levels:{index:number;version:string;difficulty:string;profile:string;seconds:number;min_win_rate:number;min_matches:number}[];}
 export interface TopologyStatus{conditions:{condition:string;topology:string;status?:string;trainable?:boolean;edge_count?:number;control_hash:string}[];comparisons:{id:string;suite:string;candidate_id:string|null;metrics:{condition?:string;status?:string;seed?:number;win_rate?:number;mean_reward?:number;wins?:number;episodes?:number;topology?:string;compute?:{cpu_seconds?:number};reason?:string}}[];}
 export class Engine{
- state:Match=createMatch();mode:Mode='overview';difficulty:Difficulty='medium';topology:Topology='real';paused=false;matchStarted=true;
+ state:Match=createMatch();mode:Mode='spectate';difficulty:Difficulty='medium';publicLevel=5;topology:Topology='real';paused=false;matchStarted=true;
  graph:GraphView|null=null;activity:number[]=[];aggregate=0;brainMs=0;gameMs=0;action:Action=0;scores:number[]=[];available:boolean[]=[];inputs:number[]=[];neuralRule:string|null=null;
  connected=false;ready=false;lastResponse=0;neuralActions=0;activityUpdates=0;checkpoint='seed-initialized';checkpointHash='';datasetHash='unavailable';trainingEnabled=true;requestedCheckpoint='';loadingCheckpoint=false;
  everOnline=false;connectAttempts=0;
@@ -64,6 +64,12 @@ export class Engine{
   if(this.actions.length&&this.mode!=='replay')this.lastReplay=this.exportReplay();
   this.state=createMatch(seed,scene,limit);this.actions=[];this.sourceSegments=[];this.paused=false;this.matchStarted=true;this.replayCursor=0;this.action=0;this.awaiting=-1;this.accumulator=0;this.error='';this.ready=false;this.loadingCheckpoint=false;this.history=[];this.clearSignals();this.checkpoint='seed-initialized';this.checkpointHash='';
   if(this.mode!=='replay')this.replay=null;this.send({v:2,type:'reset',seed,topology:this.topology});
+ }
+ setPublicLevel(level:number){
+  const next=Math.max(1,Math.min(10,Math.floor(level)));
+  this.publicLevel=next;
+  this.difficulty=next<=3?'easy':next<=7?'medium':'hard';
+  this.reset(780+next*17,'standard',2700);
  }
  setMode(mode:Mode){
   if(this.actions.length&&this.mode!=='replay')this.lastReplay=this.exportReplay();

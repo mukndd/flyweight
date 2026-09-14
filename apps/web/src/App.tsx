@@ -1,67 +1,158 @@
-import {useEffect,useRef,useState} from 'react';
-import {Arena} from './Arena';
-import {Controls} from './Controls';
-import {DecisionPanels} from './DecisionPanels';
-import {Overview,Leaderboard} from './Overview';
-import {Presentation3D} from './Presentation3D';
-import {Research,ResearchDashboard} from './Research';
-import {Lab} from './Lab';
-import {Engine,type Mode} from './engine';
+import {useEffect,useState} from 'react';
 import {ACTIONS} from '../../../packages/protocol';
-import type {Difficulty} from '../../../packages/sim/core';
+import {describeEvent,observation,roundReward,type CombatEvent} from '../../../packages/sim/core';
+import {Arena} from './Arena';
+import {Brain} from './Brain';
+import {Controls} from './Controls';
+import {Engine,type Mode} from './engine';
+import {Lab} from './Lab';
+import {Presentation3D} from './Presentation3D';
 
-const modes:{id:Mode;label:string;hint:string}[]=[
- {id:'overview',label:'Overview',hint:'Neuroscience Fight Night home'},
- {id:'human',label:'Play',hint:'Fight the Fly Brain yourself'},
- {id:'spectate',label:'Watch',hint:'Watch the Bot fight the Fly Brain'},
- {id:'research',label:'Research',hint:'Review champion lineage and benchmarks'},
- {id:'lab',label:'Lab',hint:'Train artificial adapters'},
- {id:'leaderboard',label:'Leaderboard',hint:'Verified human exhibition results'},
- {id:'replay',label:'Replays',hint:'Review saved matches'},
-];
+type PublicRoute='spectate'|'human'|'research';
+
+const routeLabels:Record<PublicRoute,string>={spectate:'WATCH',human:'FIGHT',research:'SCIENCE'};
+const palette=['ember','graphite','oxide','steel'];
+
+function publicFlyId(engine:Engine){
+ const day=engine.research?.today?.day;
+ const count=engine.research?.counts?.candidates;
+ const n=typeof day==='number'&&day>0?day:typeof count==='number'&&count>0?count:0;
+ return `FW-${String(n).padStart(3,'0')}`;
+}
+
+function pct(value?:number){
+ return value===undefined?'--':`${Math.round(value*100)}%`;
+}
+
+function clock(frame:number){
+ const seconds=Math.max(0,Math.floor(frame/60));
+ return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+}
+
+function publicAchievement(engine:Engine){
+ const cert=engine.research?.certified_level;
+ const today=engine.research?.today;
+ if(cert)return `Level ${cert.level} certified at ${pct(cert.win_rate)} over ${cert.matches} matches`;
+ if(today&&today.promotions>0)return `${today.promotions} promotion${today.promotions===1?'':'s'} recorded today`;
+ if(today&&today.candidates_evaluated>0)return `${today.candidates_evaluated} candidates evaluated today`;
+ return 'No certified ladder level yet';
+}
+
+function eventLabel(event:CombatEvent){
+ const actor=event.actor===1?'Fly':'Opponent';
+ if(event.type==='blocked')return `${actor} blocked ${ACTIONS[event.action].toLowerCase()}`;
+ if(event.type==='miss')return `${actor} whiffed ${ACTIONS[event.action].toLowerCase()}`;
+ if(event.type==='counter')return `${actor} countered`;
+ if(event.type==='combo')return `${actor} landed combo`;
+ if(event.type==='shove')return `${actor} broke guard`;
+ return `${actor} landed ${event.damage} damage`;
+}
+
+function latestResult(engine:Engine){
+ const event=(engine.state.events??[]).filter(e=>e.actor===1||e.target===1).at(-1);
+ return event?describeEvent(event,1):'No exchange yet';
+}
 
 export function App(){
  const [engine]=useState(()=>new Engine());
- const[,refresh]=useState(0);
- const[layout,setLayout]=useState('split');
- const[controls,setControls]=useState(false);
- const file=useRef<HTMLInputElement>(null);
+ const [,refresh]=useState(0);
+ const [controls,setControls]=useState(false);
+ const [challengeState,setChallengeState]=useState<'setup'|'fight'|'result'>('setup');
+ const [challenger,setChallenger]=useState('');
+ const [appearance,setAppearance]=useState(palette[0]);
+ const internal=new URLSearchParams(location.search).get('internal')==='1'&&import.meta.env.DEV;
+
  useEffect(()=>{
   engine.connect();
   const timer=setInterval(()=>refresh(v=>v+1),100);
   if(import.meta.env.DEV)window.__FLYWEIGHT__={snapshot:()=>engine.snapshot(),scene:(name,seed=783,seconds=45)=>{engine.mode='spectate';engine.reset(seed,name,seconds*60);},pause:p=>{engine.paused=p;},exportReplay:()=>engine.exportReplay(),loadReplay:text=>engine.loadReplay(text),step:frames=>{if(Number.isInteger(frames)&&frames>0&&frames<=5400)for(let i=0;i<frames;i++)engine.advance();},engine};
   return()=>{clearInterval(timer);engine.destroy();delete window.__FLYWEIGHT__;};
  },[engine]);
- const s=engine.state,mode=engine.mode,g=engine.graph,online=engine.online,done=s.winner!==null;
- const training=engine.training?.status==='training';
- const brainStatus=training?`Fly Brain training... generation ${engine.training?.generation}/${engine.training?.generations}`
-  :online?`Fly Brain engine online - ${g?`${g.neurons.toLocaleString()} neurons · ${g.edge_count.toLocaleString()} connections`:''}`
-  :engine.startingUp?'Starting Fly Brain... connecting'
-  :'Fly Brain offline · demo bot active';
- const save=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(engine.exportReplay())],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=`flyweight-seed-${s.seed}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
- const load=async(f?:File)=>{if(!f)return;try{if(f.size>1000000)throw Error('Replay must be under 1 MB');engine.loadReplay(await f.text());}catch(e){engine.error=e instanceof Error?e.message:'Invalid replay';}};
- const restart=()=>{if(mode==='replay'&&engine.replay){engine.seek(0);engine.paused=false;}else engine.reset();};
- const matchTitle=mode==='lab'?'TRAIN THE ADAPTERS':mode==='replay'?'REPLAY VIEWER':mode==='human'?'HUMAN CHALLENGE':'LIVE EXHIBITION';
- return <div className="app-shell"><header className="masthead"><a className="wordmark" href="/"><span className="brand-icon" aria-hidden="true">f<span>•</span></span>flyweight<span className="version">EXPERIMENT 002</span></a><div className="header-right"><span className={`local-dot${online?' online':''}${engine.startingUp&&!online?' starting':''}`}/><span>{brainStatus}</span><a href="#about" className="about-link">About the experiment ↗</a></div></header><main>
- <div className="workspace-nav"><nav aria-label="Game mode">{modes.map(m=><button key={m.id} title={m.hint} aria-pressed={mode===m.id} onClick={()=>engine.setMode(m.id)} className={mode===m.id?'active':''}>{m.label}</button>)}</nav><div className="workspace-tools"><button className="controls-open" onClick={()=>setControls(true)}>⌨ Controls</button><div className="layout-control">{[['arena','Arena only'],['split','Fight and decisions'],['brain','Decision focus']].map(([id,label])=><button key={id} aria-label={label} title={label} aria-pressed={layout===id} className={layout===id?'selected':''} onClick={()=>setLayout(id)}>{id==='arena'?'▰':id==='split'?'◫':'⌘'}</button>)}</div></div></div>
- {!online&&engine.startingUp&&<div className="notice" role="status">Starting Fly Brain - loading the connectome. The demo bot is available meanwhile.</div>}
- {!online&&!engine.startingUp&&<div className="warning" role="status"><strong>Fly Brain offline.</strong> Using the demo bot instead. <details><summary>Technical details</summary><p>The Fly Brain engine is unavailable or reconnecting. No neural signals are fabricated. Reconnection is automatic; changes in controller source are recorded in replays.</p></details></div>}
- {online&&g?.synthetic&&<div className="warning" role="status"><strong>Synthetic wiring.</strong> The engine is online, but this fixture does not use FlyWire data or neuron IDs.</div>}
- {online&&!engine.isNeural&&<div className="comparison-notice">Research control active: a conventional baseline runs the purple fighter. No neurons are active.</div>}
- {online&&engine.isNeural&&engine.topology!=='real'&&<div className="comparison-notice">Research comparison: {engine.topology.replaceAll('_',' ')}. This is not the original biological wiring.</div>}
- <div className="mobile-warning">Play requires a keyboard. You can Watch, use Lab and review Replays on this screen.</div>
- {mode==='overview'?<Overview engine={engine}/>:mode==='research'?<ResearchDashboard engine={engine}/>:mode==='leaderboard'?<Leaderboard engine={engine}/>:<>
-  {mode!=='lab'&&mode!=='replay'&&<div className="match-setup"><div className="match-pair"><span className="identity bot">◆ {mode==='human'?'YOU':'BOT'}</span><span>vs</span><span className="identity fly">✳ {engine.rightName}</span></div><label>Bot difficulty<select aria-label="Bot difficulty" value={engine.difficulty} disabled={mode==='human'} onChange={e=>{engine.difficulty=e.target.value as Difficulty;engine.reset();}}>{['easy','medium','hard'].map(d=><option key={d} value={d}>{d[0].toUpperCase()+d.slice(1)}</option>)}</select></label><label>Fly Brain mode<select aria-label="Fly Brain mode" value={engine.requestedCheckpoint} disabled={!online||!engine.isNeural} onFocus={()=>engine.send({v:2,type:'checkpoint_list'})} onChange={e=>engine.selectCheckpoint(e.target.value)}><option value="">Not trained yet</option>{engine.checkpoints.map(c=><option key={c.id} value={c.id}>Trained candidate · {c.id.slice(-6)}</option>)}</select></label><p>Fly wiring: <b>fixed</b><br/>Adapters: <b>{engine.requestedCheckpoint?'trained snapshot':'trainable in Lab'}</b></p></div>}
-  <section className={`experiment-grid layout-${layout} mode-${mode}`}><div className="arena-panel"><div className="panel-top"><span className="panel-label">{matchTitle}</span><span className="arena-status"><i className={!engine.paused&&!done?'lit':''}/>{mode==='lab'?'EXPERIMENT':engine.paused?'PAUSED':done?'ROUND COMPLETE':'ROUND 1'}</span></div>
-  {mode==='lab'?<Lab engine={engine}/>:<><Presentation3D engine={engine} variant="match"/><div className="match-hud">{[0,1].map(i=><div key={i} className={i?'fighter-hud brain-fighter':'fighter-hud'}><div><strong>{i?'✳ '+engine.rightName:'◆ '+(mode==='human'?'YOU':'BOT')}</strong><small>{i?online&&engine.isNeural?'Connectome controller':'Conventional controller':mode==='human'?'Keyboard input':'Rule-based opponent'}</small></div><div className="health-track"><span style={{width:`${s.fighters[i].hp}%`}}/></div><span className="health-number">{s.fighters[i].hp}<small> / 100</small></span></div>)}<div className="timer"><strong>{String(Math.max(0,Math.ceil((s.limit-s.frame)/60))).padStart(2,'0')}</strong><small>SECONDS</small></div></div>
-  <div className="stage"><Arena engine={engine}/><div className="stage-caption"><span>◆ {mode==='human'?'YOU':'BOT'} · LEFT</span><span>✳ {engine.rightName} · RIGHT</span></div>{(engine.paused||done||!engine.matchStarted)&&<div className="pause-card"><span className="eyebrow">{done?'ROUND COMPLETE':engine.matchStarted?'PAUSED':'READY WHEN YOU ARE'}</span>{done&&<h2>{s.winner===2?'Draw.':s.winner===1?`${engine.rightName} wins.`:`${mode==='human'?'You':'Bot'} wins.`}</h2>}{done&&<div className="result-card"><span>Dealt<b>{100-s.fighters[1].hp}</b></span><span>Taken<b>{100-s.fighters[0].hp}</b></span><span>Time<b>{Math.round(s.frame/60)}s</b></span><span>Champion<b>{engine.checkpoint.slice(-6)}</b></span></div>}<button className="primary" onClick={()=>{if(done)restart();else{engine.paused=false;engine.matchStarted=true;}}}>{done?'Play again ↗':engine.matchStarted?'Resume':'Start match'}</button><div className="pause-links"><button onClick={restart}>Restart</button><button onClick={save}>Save replay</button><button onClick={()=>{engine.matchStarted=false;engine.paused=false;engine.keys.clear();}}>Exit match</button></div></div>}</div>
-  <div className="action-pair"><span><b>{mode==='human'?'YOU':'BOT'}</b> {ACTIONS[s.fighters[0].action]}</span><span><b>{engine.rightName}</b> {ACTIONS[s.fighters[1].action]}</span></div>
-  <div className="arena-bottom"><span className="mono">SEED {s.seed} <span className="divider">/</span> FRAME {s.frame}</span><div><button aria-label={engine.paused?'Resume':'Pause'} onClick={()=>{engine.paused=!engine.paused;}}>{engine.paused?'▶ Resume':'Ⅱ Pause'}</button><button onClick={restart}>↺ Restart</button><button onClick={save}>↓ Save replay</button></div></div>
-  {mode==='replay'?<div className="match-settings"><div className="replay-controls"><button onClick={()=>file.current?.click()}>↑ Open replay</button><input ref={file} type="file" accept=".json,application/json" hidden onChange={e=>{void load(e.target.files?.[0]);e.target.value='';}}/><button disabled={!engine.lastReplay} onClick={()=>{if(engine.lastReplay)engine.loadReplay(JSON.stringify(engine.lastReplay));}}>Watch last match</button></div>{engine.replay&&<label className="seek-label">Frame {engine.replayCursor} / {engine.replay.actions.length}<input aria-label="Replay frame" type="range" min="0" max={engine.replay.actions.length} value={engine.replayCursor} onChange={e=>engine.seek(Number(e.target.value))}/></label>}<small>Verified action log · version {engine.replay?.v??'—'} · brain activity was not recorded</small></div>:<div className="match-tip">Try <kbd>C + J</kbd> for a low kick. Two connected light punches open a heavy combo finisher. <button onClick={()=>setControls(true)}>All controls ↗</button></div>}</>}
-  </div><DecisionPanels engine={engine}/></section></>}
- {engine.error&&<div className="error" role="alert">{engine.error}<button onClick={()=>{engine.error='';}}>Dismiss</button></div>}
- {mode!=='overview'&&<div className="data-strip"><span className="data-tag">{!online?'DEMO BOT':g?.synthetic?'SYNTHETIC FIXTURE':engine.topology==='real'?'REAL FLYWIRE DATA':'RESEARCH CONTROL'}</span><p>{!online?'Fly Brain is offline. The purple fighter is a conventional demo bot.':engine.topology==='real'&&!g?.synthetic?'The connections come from a real fly. The sensory adapter, motor readout and fighting game are artificial.':'This is a labelled comparison configuration. Inspect its exact structure in Research details.'}</p><span className="no-learning">No learning during matches</span></div>}
- {mode!=='overview'&&<Research engine={engine}/>}
- <footer id="about"><div><a className="wordmark" href="/">flyweight<span className="footer-star">✳</span></a><p>An experiment, not an organism.</p></div><p>Not a conscious fly or a full-brain simulation.<br/>Artificial adapters can train; biological wiring stays fixed.<br/>A round is an observation, not scientific proof.</p><div className="footer-links"><a href="https://www.nature.com/articles/s41586-024-07763-9" target="_blank" rel="noreferrer">Scientific reference ↗</a><a href="https://github.com/philshiu/Drosophila_brain_model" target="_blank" rel="noreferrer">Data & attribution ↗</a><span className="mono">LOCAL-FIRST. EXPLORATORY BY DESIGN.</span></div></footer>
- {controls&&<Controls engine={engine} onClose={()=>setControls(false)}/>}</main></div>;
+
+ useEffect(()=>{
+  if(engine.mode==='human'&&engine.state.winner!==null)setChallengeState('result');
+ },[engine.mode,engine.state.winner,engine.state.frame]);
+
+ const route=(engine.mode==='human'||engine.mode==='research'||engine.mode==='spectate'?engine.mode:'spectate') as PublicRoute;
+ const flyId=publicFlyId(engine);
+ const certified=engine.research?.certified_level?.level??0;
+ const status=engine.online?'Online':engine.startingUp?'Starting':'Offline';
+ const researchState=engine.research?.worker_status?.state??engine.research?.training_status??'idle';
+
+ const go=(next:PublicRoute)=>{
+  engine.setMode(next as Mode);
+  if(next==='human'){setChallengeState('setup');engine.paused=true;engine.matchStarted=false;}
+ };
+
+ const startChallenge=()=>{
+  engine.setMode('human');
+  engine.reset(902+engine.publicLevel*31,'standard',2700);
+  setChallengeState('fight');
+ };
+
+ return <div className="public-shell"><header className="public-header"><button className="brand-lockup" onClick={()=>go('spectate')}><span>flyweight</span></button><nav aria-label="Public navigation">{(Object.keys(routeLabels) as PublicRoute[]).map(id=><button key={id} aria-pressed={route===id} onClick={()=>go(id)}>{routeLabels[id]}</button>)}</nav><div className="header-status"><i className={engine.online?'online':engine.startingUp?'starting':''}/><span>{status}</span></div></header>
+  <main>
+   {!engine.online&&!engine.startingUp&&<div className="public-warning" role="status"><b>Fly Brain offline.</b> Demo control is active; no neural activity is fabricated.</div>}
+   {engine.online&&engine.graph?.synthetic&&<div className="public-warning" role="status"><b>Synthetic fixture.</b> This service is not using FlyWire data.</div>}
+   {internal&&engine.mode==='lab'?<InternalLab engine={engine}/>:route==='research'?<SciencePage engine={engine} flyId={flyId}/>:route==='human'?<HumanChallenge engine={engine} flyId={flyId} certified={certified} challenger={challenger} setChallenger={setChallenger} appearance={appearance} setAppearance={setAppearance} state={challengeState} setState={setChallengeState} startChallenge={startChallenge} openControls={()=>setControls(true)}/>:<WatchExperience engine={engine} flyId={flyId} certified={certified} researchState={researchState} openFight={()=>go('human')}/>}
+  </main>
+  <footer className="public-footer"><span>Real FlyWire connectivity; artificial game inputs and outputs.</span><button onClick={()=>go('research')}>How it works</button>{internal&&<button onClick={()=>engine.setMode('lab')}>Internal Lab</button>}</footer>
+  {controls&&<Controls engine={engine} onClose={()=>setControls(false)}/>}
+ </div>;
+}
+
+function WatchExperience({engine,flyId,certified,researchState,openFight}:{engine:Engine;flyId:string;certified:number;researchState:string;openFight:()=>void}){
+ return <section className="watch-page" aria-label="Live experiment watch view"><div className="watch-copy"><div><p className="kicker">CURRENT EXHIBITION</p><h1>FLYWEIGHT</h1><p>A fruit-fly connectome controlling a fighter.</p></div><button className="primary-action" onClick={openFight}>FIGHT THE FLY</button></div>
+  <ExperimentScene engine={engine} flyId={flyId} certified={certified} context="watch"/>
+  <div className="watch-bottom"><LevelPicker engine={engine} certified={certified}/><div className="progress-line"><span>{flyId}</span><span>Certified Level {certified||'--'}</span><span>{publicAchievement(engine)}</span><span>Research {researchState}</span></div></div>
+ </section>;
+}
+
+function ExperimentScene({engine,flyId,certified,context}:{engine:Engine;flyId:string;certified:number;context:'watch'|'fight'}){
+ const done=engine.state.winner!==null;
+ return <section className="experiment-scene"><div className="scene-stage"><div className="scene-topline"><span>{flyId} vs Level {engine.publicLevel}</span><span>{engine.paused?'Paused':done?'Round complete':'Live simulation'}</span></div><Arena engine={engine}/><div className="minimal-hud"><Health label={context==='fight'?'You':'Opponent'} value={engine.state.fighters[0].hp} side="opponent"/><div className="round-clock">{String(Math.max(0,Math.ceil((engine.state.limit-engine.state.frame)/60))).padStart(2,'0')}</div><Health label={flyId} value={engine.state.fighters[1].hp} side="fly"/></div><div className="fly-station"><Presentation3D engine={engine} variant="match"/></div><div className="stage-actions"><button onClick={()=>{engine.paused=!engine.paused;engine.matchStarted=true;}}>{engine.paused?'Resume':'Pause'}</button><button onClick={()=>engine.reset()}>Restart</button></div></div>
+  <aside className="scene-instrument"><div className="instrument-head"><div><span>CONNECTOME ACTIVITY MAP</span><b>{engine.online&&engine.isNeural?'Runtime values':'Inactive'}</b></div><small>{engine.graph?.ids.length??0} displayed nodes</small></div><Brain engine={engine}/><Inspector engine={engine}/><EventStream engine={engine}/><div className="cert-line"><span>Certified</span><b>{certified?`Level ${certified}`:'Not yet'}</b></div></aside></section>;
+}
+
+function Health({label,value,side}:{label:string;value:number;side:'fly'|'opponent'}){
+ return <div className={`health ${side}`}><span>{label}</span><i><b style={{width:`${value}%`}}/></i></div>;
+}
+
+function LevelPicker({engine,certified}:{engine:Engine;certified:number}){
+ return <div className="level-picker" aria-label="Opponent level"><span>Opponent</span>{Array.from({length:10},(_,i)=>i+1).map(level=><button key={level} aria-pressed={engine.publicLevel===level} className={level<=certified?'certified':''} onClick={()=>engine.setPublicLevel(level)} title={level<=certified?'Certified level':'Uncertified or current target'}>{level}</button>)}</div>;
+}
+
+function EventStream({engine}:{engine:Engine}){
+ const events=(engine.state.events??[]).slice(-7);
+ const rows=events.length?events.map(e=>({time:clock(e.frame),label:eventLabel(e)})):[{time:clock(engine.state.frame),label:`Selected ${ACTIONS[engine.state.fighters[1].action].toLowerCase()}`}];
+ return <section className="event-stream"><div className="small-heading">Match events</div>{rows.map((row,index)=><p key={`${row.time}-${index}`}><time>{row.time}</time><span>{row.label}</span></p>)}</section>;
+}
+
+function Inspector({engine}:{engine:Engine}){
+ const obs=engine.inputs.length?engine.inputs:observation(engine.state,1);
+ const sees=[obs[6]<.13?'opponent close':'opponent at range',obs[7]?'opponent attacking':obs[8]?'opponent blocking':'opponent open',obs[12]<.16?'near right boundary':obs[11]<.16?'near left boundary':'room to move'];
+ return <section className="sees-panel"><div><span>SEES</span><b>{sees.join(' / ')}</b></div><div><span>ACTION</span><b>{ACTIONS[engine.state.fighters[1].action]}</b></div><div><span>RESULT</span><b>{latestResult(engine)}</b></div></section>;
+}
+
+function HumanChallenge({engine,flyId,certified,challenger,setChallenger,appearance,setAppearance,state,setState,startChallenge,openControls}:{engine:Engine;flyId:string;certified:number;challenger:string;setChallenger:(value:string)=>void;appearance:string;setAppearance:(value:string)=>void;state:'setup'|'fight'|'result';setState:(value:'setup'|'fight'|'result')=>void;startChallenge:()=>void;openControls:()=>void}){
+ if(state==='setup')return <section className="challenge-setup"><div className="challenge-copy"><p className="kicker">HUMAN CHALLENGE</p><h1>Fight the Fly</h1><p>Current Fly {flyId}. Certified Level {certified||'--'}. No account required.</p></div><div className="setup-form"><label>Name<input value={challenger} maxLength={24} onChange={e=>setChallenger(e.target.value)} placeholder="Optional"/></label><div><span>Appearance</span><div className="swatches">{palette.map(color=><button key={color} className={color} aria-pressed={appearance===color} onClick={()=>setAppearance(color)}>{color}</button>)}</div></div><button className="primary-action" onClick={startChallenge}>START FIGHT</button></div></section>;
+ if(state==='result')return <ResultView engine={engine} flyId={flyId} challenger={challenger} startAgain={()=>{setState('fight');startChallenge();}}/>;
+ return <section className={`fight-page fighter-${appearance}`}><div className="fight-head"><div><p className="kicker">HUMAN VS FLY</p><h1>{challenger.trim()||'You'} vs {flyId}</h1></div><button onClick={openControls}>Controls</button></div><ExperimentScene engine={engine} flyId={flyId} certified={certified} context="fight"/></section>;
+}
+
+function ResultView({engine,flyId,challenger,startAgain}:{engine:Engine;flyId:string;challenger:string;startAgain:()=>void}){
+ const winner=engine.state.winner;
+ const humanWon=winner===0;
+ const dealt=100-engine.state.fighters[1].hp;
+ const taken=100-engine.state.fighters[0].hp;
+ return <section className="result-view"><p className="kicker">MATCH RESULT</p><h1>{humanWon?'WIN':'LOSS'}</h1><div className="result-metrics"><span>{challenger.trim()||'Human'}</span><span>{flyId}</span><span>{Math.round(engine.state.frame/60)}s</span><span>{Math.round(dealt)} dealt / {Math.round(taken)} taken</span><span>Round score {roundReward(engine.state,0).toFixed(1)}</span></div><button className="primary-action" onClick={startAgain}>FIGHT AGAIN</button><button className="secondary-action" onClick={()=>navigator.clipboard?.writeText(`Flyweight result: ${humanWon?'win':'loss'} vs ${flyId}, ${Math.round(dealt)} damage dealt.`)}>SHARE RESULT</button></section>;
+}
+
+function SciencePage({engine,flyId}:{engine:Engine;flyId:string}){
+ const overview=engine.research,cert=overview?.certified_level,ladder=engine.ladder?.levels??[],comparison=engine.topologyStatus?.comparisons??[];
+ return <section className="science-page"><div className="science-hero"><p className="kicker">SCIENCE</p><h1>What is actually running?</h1><p>The biological topology is fixed. Game sensors and motor readouts are artificial. Normal matches do not update weights.</p><button onClick={()=>void engine.fetchResearch()}>Refresh</button></div><div className="science-grid"><section><h2>{flyId}</h2><p>Public champion alias. Raw checkpoint identifiers stay here, not in the broadcast HUD.</p><dl><dt>Raw checkpoint</dt><dd>{engine.research?.current_champion?.checkpoint_id??engine.checkpoint}</dd><dt>Checkpoint hash</dt><dd>{engine.checkpointHash||'unavailable'}</dd><dt>Dataset hash</dt><dd>{engine.datasetHash}</dd></dl></section><section><h2>Ladder</h2><p>{cert?`Certified through Level ${cert.level}.`:'No level certification recorded yet.'}</p><div className="science-ladder">{Array.from({length:10},(_,i)=>i+1).map(level=><span key={level} className={cert&&level<=cert.level?'cleared':''}>{level}</span>)}</div><details><summary>Level manifest</summary>{ladder.map(level=><p key={level.version}>Level {level.index}: {level.difficulty}, {level.profile}, {level.min_matches} matches</p>)}</details></section><section><h2>Controller Boundary</h2><p>FlyWire connectivity and initial strengths stay fixed. CEM trains only artificial sensory/readout adapters in isolated candidates.</p><p>Current browser matches are observations of a checkpoint, not online learning.</p></section><section><h2>Activity View</h2><p>No reliable anatomical coordinates are exposed to the web client. The public brain panel is a deterministic graph layout, driven by live controller activations.</p><p>Node intensity maps to absolute activation; edge brightness is capped for display performance.</p></section></div><details className="deep-methods"><summary>Research history and controls</summary><div className="method-grid"><section><h3>Today</h3><p>{overview?.today?`${overview.today.matches_simulated} matches, ${overview.today.candidates_evaluated} candidates, ${overview.today.promotions} promotions.`:'Research registry unavailable.'}</p></section><section><h3>Topology Comparisons</h3>{comparison.length?comparison.slice(0,8).map(row=><p key={row.id}>{row.metrics.condition??row.suite}: {pct(row.metrics.win_rate)} win rate</p>):<p>First comparison batch running or unavailable.</p>}</section><section><h3>Human Results</h3>{engine.humanMatches?.matches?.length?engine.humanMatches.matches.slice(0,5).map(match=><p key={match.id}>{match.result.result.replace('_',' ')}: {Math.round(match.result.damage_dealt)} dealt</p>):<p>No challengers yet. Be the first.</p>}</section></div></details></section>;
+}
+
+function InternalLab({engine}:{engine:Engine}){
+ return <section className="internal-lab"><h1>Internal Lab</h1><p>Development-only adapter training controls. This is hidden from public navigation.</p><Lab engine={engine}/></section>;
 }

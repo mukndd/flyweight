@@ -11,20 +11,20 @@ export function Arena({engine}:{engine:Engine}){
    update(_time:number,delta:number){
     engine.update(delta);const g=this.ink;g.clear();
     const floor=390,frame=engine.state.frame;
-    g.fillStyle(0x222429);g.fillRect(0,0,1000,500);
-    // Atmospheric architectural geometry, all generated locally.
-    g.fillStyle(0x292b33);g.fillCircle(520,230,210);g.lineStyle(1,0x46414d,.35);
+    g.fillStyle(0x111313);g.fillRect(0,0,1000,500);
+    // Physical training-room geometry, all generated locally.
+    g.fillStyle(0x181a1a);g.fillCircle(520,230,210);g.lineStyle(1,0x323736,.38);
     for(let r=110;r<=290;r+=60)g.strokeCircle(500,240,r);
-    g.lineStyle(1,0x40434b,.6);
+    g.lineStyle(1,0x303432,.65);
     for(let x=0;x<1050;x+=60){g.lineBetween(x,390,500+(x-500)*1.6,500);}
     for(let y=390;y<500;y+=22)g.lineBetween(0,y,1000,y);
-    g.lineStyle(1,0xb0a2c7,.55);g.lineBetween(30,floor,970,floor);
-    g.fillStyle(0xb9a4e8,.04);g.fillTriangle(150,30,70,390,350,390);g.fillTriangle(850,30,650,390,930,390);
-    for(let x=55;x<960;x+=32){g.fillStyle(0x70737b,.6);g.fillRect(x,390,1,x%3===0?12:5);}
-    for(let i=0;i<2;i++)this.drawFighter(g,engine.state.fighters[i],i===0?0xc8df9a:0xb7a0e3,floor,frame,i===1);
+    g.lineStyle(1,0x8d8a80,.5);g.lineBetween(30,floor,970,floor);
+    g.fillStyle(0xd29a52,.05);g.fillTriangle(160,34,70,390,350,390);g.fillStyle(0x7892a8,.05);g.fillTriangle(850,34,650,390,930,390);
+    for(let x=55;x<960;x+=32){g.fillStyle(0x6b706d,.55);g.fillRect(x,390,1,x%3===0?12:5);}
+    for(let i=0;i<2;i++)this.drawFighter(g,engine.state.fighters[i],i===0?0x7892a8:0xc77e35,floor,frame,i===1);
     for(const h of engine.state.hits){
      const life=1-(frame-h.frame)/18, x=h.x,y=floor-h.y;
-     g.lineStyle(2,h.blocked?0xc8df9a:0xe6d3a1,life);
+     g.lineStyle(2,h.blocked?0xaab4b7:0xe2b36f,life);
      for(let i=0;i<8;i++){const a=i*Math.PI/4;g.lineBetween(x+Math.cos(a)*(22-life*14),y+Math.sin(a)*(22-life*14),x+Math.cos(a)*(45-life*20),y+Math.sin(a)*(45-life*20));}
     }
    }
@@ -36,7 +36,7 @@ export function Arena({engine}:{engine:Engine}){
     g.lineStyle(11,0x16181d,1);g.lineBetween(hip.x,hip.y,x-15-walk*9,y-4);g.lineBetween(hip.x,hip.y,x+18+walk*9,y-4);
     g.lineStyle(5,color,.8);g.lineBetween(hip.x,hip.y,x-15-walk*9,y-4);g.lineBetween(hip.x,hip.y,x+18+walk*9,y-4);
     g.fillStyle(color);g.fillTriangle(chest.x-dir*15,chest.y, chest.x+dir*17,chest.y+4,hip.x,hip.y+6);
-    g.fillStyle(0x32313b);g.fillTriangle(chest.x-dir*12,chest.y+6,hip.x,hip.y+6,hip.x-dir*12,hip.y-4);
+    g.fillStyle(neural?0x37261b:0x1f2a31);g.fillTriangle(chest.x-dir*12,chest.y+6,hip.x,hip.y+6,hip.x-dir*12,hip.y-4);
     const attacking=!!f.attack,extension=attacking?Math.sin(Math.min(1,f.attackFrame/(f.attack===6||f.attack===13?17:10))*Math.PI)*63:0;
     const fistX=chest.x+dir*(f.block?18:26+extension),fistY=chest.y+(f.block?-15:6);
     g.lineStyle(7,color);g.lineBetween(chest.x,chest.y+7,chest.x-dir*18,chest.y+24);
@@ -48,7 +48,7 @@ export function Arena({engine}:{engine:Engine}){
     const hx=chest.x+dir*4,hy=chest.y-17;
     g.fillStyle(color);g.fillPoints([{x:hx-13,y:hy-10},{x:hx+9,y:hy-12},{x:hx+dir*17,y:hy},{x:hx+7,y:hy+12},{x:hx-11,y:hy+9}],true);
     g.lineStyle(4,0x24262d);g.lineBetween(hx+dir*2,hy-1,hx+dir*13,hy-3);
-    if(neural){g.lineStyle(2,color,.8);g.lineBetween(hx-5,hy-12,hx-12,hy-26);g.lineBetween(hx+5,hy-12,hx+12,hy-26);g.fillStyle(0xd5eeaf);g.fillCircle(hx-12,hy-26,2);g.fillCircle(hx+12,hy-26,2);}
+    if(neural){g.lineStyle(2,color,.8);g.lineBetween(hx-5,hy-12,hx-12,hy-26);g.lineBetween(hx+5,hy-12,hx+12,hy-26);g.fillStyle(0xf0cf8d);g.fillCircle(hx-12,hy-26,2);g.fillCircle(hx+12,hy-26,2);}
     if(f.attack===9||f.attack===11){const reach=Math.sin(Math.min(1,f.attackFrame/14)*Math.PI)*65;g.lineStyle(7,color);g.lineBetween(hip.x,hip.y,x+dir*(20+reach),y-(f.attack===11?30:12));g.fillStyle(color);g.fillRoundedRect(x+dir*(20+reach)-7,y-(f.attack===11?37:19),16,10,3);}
     if(f.block){g.lineStyle(2,color,.6);g.beginPath();g.arc(x+dir*12,y-50,48,dir>0?-1.3:1.8,dir>0?1.3:4.5);g.strokePath();}
    }
