@@ -212,3 +212,5 @@ Primary upstream sources:
 - Scientific reference: [Nature, 2024, FlyWire connectome](https://www.nature.com/articles/s41586-024-07763-9)
 
 Raw data, processed graphs, checkpoints, replays, local databases, virtual environments, and large generated outputs are intentionally not committed.
+
+`models/` (gitignored, ~370 MB locally) holds raw [Meshy AI](https://www.meshy.ai/) 3D-asset exports — separate zip + extracted OBJ/FBX/texture bundles for the fly, the fighter, the humanoid opponent, and the controller — generated as candidate art for the public presentation layer described in [docs/visual-reference/ART_DIRECTION.MD](docs/visual-reference/ART_DIRECTION.MD). None of it is optimized, license-cleared, or wired into the app yet: `apps/web/public/assets/fly/SOURCE.MD` is the (currently empty) attribution stub reserved for whichever asset actually ships. Treat anything under `models/` as unreleased source material, not a shipped dependency.

@@ -24,3 +24,7 @@ logs/
 !.env.example
 *credentials*
 *.log
+
+# Raw Meshy AI 3D-asset exports (candidate art for the presentation layer,
+# unoptimized, ~370 MB) — see README.md > Data and Attribution.
+models/
